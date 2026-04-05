@@ -1,12 +1,13 @@
 """Project generation — `rob-stack new`"""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
-from .templates.shared import gitignore, readme
+from .templates.shared import gitignore, readme, docker_compose, init_db_sql
 from .templates.nextjs import generate_nextjs
-from .templates.go_cloudflare import generate_go_cloudflare
+from .templates.cloudflare import generate_go_cloudflare
 from .templates.mobile import generate_mobile
 
 
@@ -48,6 +49,9 @@ def run_generate() -> None:
         print("❌  Name is required.")
         sys.exit(1)
 
+    # ── Description (optional) ────────────────────────────────────
+    description = ask("Description (optional, press Enter to skip): ")
+
     # ── Architecture ───────────────────────────────────────────────
     print()
     print("Architecture:")
@@ -67,7 +71,12 @@ def run_generate() -> None:
         sys.exit(1)
 
     # ── Generate ───────────────────────────────────────────────────
-    ctx = {"name": name, "title": title_case(name), "schema": schema_name(name)}
+    ctx = {
+        "name": name,
+        "title": title_case(name),
+        "schema": schema_name(name),
+        "description": description,
+    }
 
     if is_nextjs:
         generate_nextjs(root, ctx, write)
@@ -78,33 +87,43 @@ def run_generate() -> None:
         generate_mobile(root, ctx, write)
 
     write(root, ".gitignore", gitignore())
+    write(root, "docker-compose.yml", docker_compose(ctx, is_nextjs))
+    write(root, "scripts/init-db.sql", init_db_sql(ctx["schema"]))
     write(root, "README.md", readme(ctx, is_nextjs, has_mobile))
+
+    # ── Git init ──────────────────────────────────────────────────
+    print("\n🔧 Initializing git repository...")
+    subprocess.run(["git", "init"], cwd=root, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial scaffold from rob-stack"],
+        cwd=root, capture_output=True,
+    )
+    print("  ✓ git init + initial commit")
 
     # ── Next steps ─────────────────────────────────────────────────
     schema = ctx["schema"]
     env_file = ".env.local" if is_nextjs else ".env"
+    dev_cmd = "npm install && npm run dev" if is_nextjs else (
+        "make dev-api   (terminal 1)\n      make dev-web   (terminal 2)"
+    )
+    mobile_step = f"  5.  cd mobile && npm install && npx expo start\n" if has_mobile else ""
 
     print(f"""
-✅  Created {name}/
+✅  Created {name}/ (git repo initialised)
 
 ─────────────────────────────────────────────
   Next steps:
 
   1.  cd {name}
 
-  2.  Supabase — run in SQL editor:
-        CREATE SCHEMA {schema};
-        CREATE ROLE {schema}_app LOGIN PASSWORD '...';
-        GRANT USAGE ON SCHEMA {schema} TO {schema}_app;
-        GRANT ALL ON ALL TABLES IN SCHEMA {schema} TO {schema}_app;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA {schema}
-          GRANT ALL ON TABLES TO {schema}_app;
+  2.  docker compose up -d
+      → Postgres on :5432, Redis on :6379, Mailpit on :8025
 
-  3.  cp .env.example {env_file}  # fill in all values
+  3.  cp .env.example {env_file}   # fill in values
 
-  4.  Provision services (see README.md checklist)
-
-  5.  {"npm install && npm run dev" if is_nextjs else "cd api && go mod tidy && npm run dev (from web/)"}
-{"" if not has_mobile else f"  6.  cd mobile && npm install && npx expo start"}
+  4.  {dev_cmd}
+{mobile_step}
+  See README.md for full setup guide & service checklist.
 ─────────────────────────────────────────────
 """)
