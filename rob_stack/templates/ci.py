@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npx tsc --noEmit
+      - run: npm audit --audit-level=high
 """
 
 
@@ -44,6 +45,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: cd web && npm ci
       - run: cd web && npx tsc --noEmit
+      - run: cd web && npm audit --audit-level=high
 
   build-api:
     runs-on: ubuntu-latest
@@ -57,6 +59,10 @@ jobs:
           tinygo-version: "0.32.0"
       - run: cd api && go mod tidy && go vet ./...
       - run: cd api && tinygo build -o /dev/null -target wasm ./cmd/worker
+      - name: Check for Go vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd api && govulncheck ./...
 """
 
 
