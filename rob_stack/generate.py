@@ -3,8 +3,9 @@
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
-from .templates.shared import gitignore, readme, docker_compose, init_db_sql
+from .templates.shared import gitignore, readme, supabase_config, init_db_sql
 from .templates.nextjs import generate_nextjs
 from .templates.cloudflare import generate_go_cloudflare
 from .templates.mobile import generate_mobile
@@ -13,6 +14,9 @@ from .templates.ci import (
     github_deploy_nextjs, github_deploy_go,
     concurrent_dev_package_json,
 )
+from .templates.docs import claude_md, contributing_md, architecture_md, deployment_md
+from .preflight import run_preflight
+from .credentials import prompt_credentials
 
 
 def ask(prompt: str) -> str:
@@ -75,6 +79,15 @@ def run_generate(dry_run: bool = False) -> None:
         if not github_user:
             github_user = "yourusername"
 
+    # ── Pre-flight checks ─────────────────────────────────────────
+    run_preflight(is_nextjs, has_mobile)
+
+    # ── Credential prompts ────────────────────────────────────────
+    schema = schema_name(name)
+    creds = None  # type: Optional[dict]
+    if not dry_run:
+        creds = prompt_credentials(name, schema, is_nextjs)
+
     # ── Dry run writer ─────────────────────────────────────────────
     file_count = [0]
     if dry_run:
@@ -95,15 +108,15 @@ def run_generate(dry_run: bool = False) -> None:
     ctx = {
         "name": name,
         "title": title_case(name),
-        "schema": schema_name(name),
+        "schema": schema,
         "description": description,
         "github_user": github_user,
     }
 
     if is_nextjs:
-        generate_nextjs(root, ctx, writer)
+        generate_nextjs(root, ctx, writer, creds=creds)
     else:
-        generate_go_cloudflare(root, ctx, writer)
+        generate_go_cloudflare(root, ctx, writer, creds=creds)
 
     if has_mobile:
         generate_mobile(root, ctx, writer, is_nextjs=is_nextjs)
@@ -118,10 +131,14 @@ def run_generate(dry_run: bool = False) -> None:
         writer(root, "package.json", concurrent_dev_package_json(name))
 
     writer(root, ".gitignore", gitignore())
-    writer(root, "docker-compose.yml", docker_compose(ctx, is_nextjs))
-    writer(root, "scripts/init-db.sql", init_db_sql(ctx["schema"]))
-    writer(root, "supabase/migrations/001_init.sql", init_db_sql(ctx["schema"]))
+    writer(root, "supabase/config.toml", supabase_config(ctx))
+    writer(root, "scripts/init-db.sql", init_db_sql(schema))
+    writer(root, "supabase/migrations/001_init.sql", init_db_sql(schema))
     writer(root, "README.md", readme(ctx, is_nextjs, has_mobile))
+    writer(root, "CLAUDE.md", claude_md(ctx, is_nextjs, has_mobile))
+    writer(root, "CONTRIBUTING.md", contributing_md(ctx, is_nextjs, has_mobile))
+    writer(root, "ARCHITECTURE.md", architecture_md(ctx, is_nextjs, has_mobile))
+    writer(root, "DEPLOYMENT.md", deployment_md(ctx, is_nextjs, has_mobile))
 
     if dry_run:
         print(f"\n📋 Dry run complete. {file_count[0]} files would be created.")
@@ -138,12 +155,8 @@ def run_generate(dry_run: bool = False) -> None:
     print("  ✓ git init + initial commit")
 
     # ── Next steps ─────────────────────────────────────────────────
-    schema = ctx["schema"]
-    env_file = ".env.local" if is_nextjs else ".env"
-    dev_cmd = "npm install && npm run dev" if is_nextjs else (
-        "make dev-api   (terminal 1)\n      make dev-web   (terminal 2)"
-    )
-    mobile_step = f"  5.  cd mobile && npm install && npx expo start\n" if has_mobile else ""
+    port = "3000" if is_nextjs else "5173"
+    env_file = ".env.local" if is_nextjs else "api/.dev.vars"
 
     print(f"""
 ✅  Created {name}/ (git repo initialised)
@@ -152,14 +165,13 @@ def run_generate(dry_run: bool = False) -> None:
   Next steps:
 
   1.  cd {name}
+  2.  make dev
+      → Starts Supabase (Postgres + REST API) + dev server(s)
+      → App running at http://localhost:{port}
+      → Supabase Studio at http://localhost:54323
+      → Inbucket (email) at http://localhost:54324
 
-  2.  docker compose up -d
-      → Postgres on :5432, Redis on :6379, Mailpit on :8025
-
-  3.  {"cp .env.example " + env_file + "   # fill in values" if is_nextjs else "cp api/.env.example api/.dev.vars" + chr(10) + "      cp web/.env.example web/.env"}
-
-  4.  {dev_cmd}
-{mobile_step}
+  Any empty API keys can be filled in later in {env_file}.
   See README.md for full setup guide & service checklist.
 ─────────────────────────────────────────────
 """)

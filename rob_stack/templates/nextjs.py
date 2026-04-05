@@ -3,7 +3,7 @@
 import json
 
 
-def generate_nextjs(root, ctx: dict, write) -> None:
+def generate_nextjs(root, ctx: dict, write, creds=None) -> None:
     name = ctx["name"]
     title = ctx["title"]
     schema = ctx["schema"]
@@ -39,6 +39,9 @@ def generate_nextjs(root, ctx: dict, write) -> None:
     write(root, "src/app/api-docs/page.tsx", _api_doc_page())
     write(root, "src/app/api/docs/route.ts", _openapi_route())
     write(root, "Makefile",            _makefile_nextjs())
+
+    if creds is not None:
+        write(root, ".env.local", _env_local(name, schema, creds))
 
 
 # ───────────────────────────────���──────────────────────────────────
@@ -225,6 +228,53 @@ SENTRY_PROJECT=
 
 # ── BetterStack ───────────────────────────────────────────────────
 BETTERSTACK_SOURCE_TOKEN=
+"""
+
+
+def _env_local(name: str, schema: str, creds: dict) -> str:
+    g = creds.get
+    return f"""\
+# ── Supabase (local via CLI) ─────────────────────────────────────
+SUPABASE_URL={g("SUPABASE_URL", "")}
+SUPABASE_ANON_KEY={g("SUPABASE_ANON_KEY", "")}
+SUPABASE_SERVICE_ROLE_KEY={g("SUPABASE_SERVICE_ROLE_KEY", "")}
+DATABASE_URL={g("DATABASE_URL", "")}
+
+# ── Upstash Redis ─────────────────────────────────────────────────
+UPSTASH_REDIS_REST_URL={g("UPSTASH_REDIS_REST_URL", "")}
+UPSTASH_REDIS_REST_TOKEN={g("UPSTASH_REDIS_REST_TOKEN", "")}
+
+# ── Clerk ─────────────────────────────────────────────────────────
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY={g("CLERK_PUBLISHABLE_KEY", "")}
+CLERK_SECRET_KEY={g("CLERK_SECRET_KEY", "")}
+NEXT_PUBLIC_CLERK_SIGN_IN_URL={g("CLERK_SIGN_IN_URL", "/sign-in")}
+NEXT_PUBLIC_CLERK_SIGN_UP_URL={g("CLERK_SIGN_UP_URL", "/sign-up")}
+NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL={g("CLERK_AFTER_SIGN_IN_URL", "/dashboard")}
+NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL={g("CLERK_AFTER_SIGN_UP_URL", "/dashboard")}
+
+# ── Resend ────────────────────────────────────────────────────────
+RESEND_API_KEY={g("RESEND_API_KEY", "")}
+RESEND_FROM_EMAIL={g("RESEND_FROM_EMAIL", "noreply@yourdomain.com")}
+
+# ── Cloudflare R2 ─────────────────────────────────────────────────
+R2_ACCOUNT_ID={g("R2_ACCOUNT_ID", "")}
+R2_ACCESS_KEY_ID={g("R2_ACCESS_KEY_ID", "")}
+R2_SECRET_ACCESS_KEY={g("R2_SECRET_ACCESS_KEY", "")}
+R2_BUCKET_NAME={g("R2_BUCKET_NAME", name)}
+R2_PUBLIC_URL=https://pub-XXXX.r2.dev
+
+# ── PostHog ───────────────────────────────────────────────────────
+NEXT_PUBLIC_POSTHOG_KEY={g("POSTHOG_KEY", "")}
+NEXT_PUBLIC_POSTHOG_HOST={g("POSTHOG_HOST", "https://us.i.posthog.com")}
+
+# ── Sentry ────────────────────────────────────────────────────────
+SENTRY_DSN={g("SENTRY_DSN", "")}
+NEXT_PUBLIC_SENTRY_DSN={g("SENTRY_DSN", "")}
+SENTRY_ORG=
+SENTRY_PROJECT=
+
+# ── BetterStack ───────────────────────────────────────────────────
+BETTERSTACK_SOURCE_TOKEN={g("BETTERSTACK_SOURCE_TOKEN", "")}
 """
 
 
@@ -658,9 +708,11 @@ export async function GET() {
 
 def _makefile_nextjs() -> str:
     return """\
-.PHONY: dev build lint test db db-stop deploy setup
+.PHONY: dev build lint test deploy setup supabase-start supabase-stop
 
 dev:
+\t@if [ ! -d node_modules ]; then npm install; fi
+\t@supabase start
 \tnpm run dev
 
 build:
@@ -672,15 +724,16 @@ lint:
 test:
 \tnpm test
 
-db:
-\tdocker compose up -d
+supabase-start:
+\tsupabase start
 
-db-stop:
-\tdocker compose down
+supabase-stop:
+\tsupabase stop
 
 deploy:
 \tvercel --prod
 
 setup:
 \tnpm install
+\tsupabase start
 """

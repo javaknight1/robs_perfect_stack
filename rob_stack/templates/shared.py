@@ -1,4 +1,4 @@
-"""Shared file templates (gitignore, docker-compose, README)."""
+"""Shared file templates (gitignore, supabase config, README)."""
 
 
 def gitignore() -> str:
@@ -31,63 +31,51 @@ build/
 """
 
 
-def docker_compose(ctx: dict, is_nextjs: bool) -> str:
+def supabase_config(ctx: dict) -> str:
+    name = ctx["name"]
+    schema = ctx["schema"]
     return f"""\
-# docker-compose.yml — local development infrastructure
-#
-# Start:   docker compose up -d
-# Stop:    docker compose down
-# Reset:   docker compose down -v  (deletes volumes)
+# Supabase local development configuration
+# Docs: https://supabase.com/docs/guides/cli/config
 
-services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+[project]
+id = "{name}"
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+[db]
+port = 54322
+major_version = 15
 
-  mailpit:
-    image: axllent/mailpit:latest
-    restart: unless-stopped
-    ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI — http://localhost:8025
-    environment:
-      MP_SMTP_AUTH_ACCEPT_ANY: 1
-      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+[db.pooler]
+enabled = false
 
-volumes:
-  postgres_data:
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "{schema}"]
+extra_search_path = ["public", "{schema}"]
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
 """
 
 
 def init_db_sql(schema: str) -> str:
     return f"""\
 -- Initialise the app schema and a scoped role.
--- This runs automatically when the postgres container starts for the first time.
+-- This runs as a Supabase migration on `supabase start` / `supabase db reset`.
 
 CREATE SCHEMA IF NOT EXISTS {schema};
 
@@ -113,7 +101,7 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
     schema = ctx["schema"]
     description = ctx.get("description", "")
     arch = "Next.js -> Vercel" if is_nextjs else "Go + React -> Cloudflare Workers (API) + Cloudflare Pages (web)"
-    env_file = ".env.local" if is_nextjs else ".env"
+    env_file = ".env.local" if is_nextjs else "api/.dev.vars"
 
     desc_line = f"\n{description}\n" if description else ""
 
@@ -165,12 +153,12 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │       └── swagger.ts      # OpenAPI spec config
 ├── middleware.ts            # Clerk auth middleware
 ├── instrumentation.ts       # Sentry instrumentation hook
-{mobile_tree}├── docker-compose.yml       # Local Postgres, Redis, Mailpit
-├── scripts/
-│   └── init-db.sql          # DB schema bootstrap (runs on first docker compose up)
-├── supabase/
+{mobile_tree}├── supabase/
+│   ├── config.toml          # Supabase local dev config
 │   └── migrations/
 │       └── 001_init.sql     # Initial schema migration
+├── scripts/
+│   └── init-db.sql          # DB schema bootstrap (reference)
 ├── .env.example             # All required environment variables
 ├── Makefile                 # Dev/build/deploy targets
 ├── package.json
@@ -180,6 +168,10 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 ├── eslint.config.mjs
 ├── tsconfig.json
 ├── vercel.json
+├── CLAUDE.md
+├── CONTRIBUTING.md
+├── ARCHITECTURE.md
+├── DEPLOYMENT.md
 └── README.md
 ```"""
     else:
@@ -211,13 +203,17 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │   ├── vite.config.ts
 │   ├── .env.example
 │   └── wrangler.toml
-{mobile_tree}├── docker-compose.yml           # Local Postgres, Redis, Mailpit
-├── scripts/
-│   └── init-db.sql              # DB schema bootstrap
-├── supabase/
+{mobile_tree}├── supabase/
+│   ├── config.toml              # Supabase local dev config
 │   └── migrations/
 │       └── 001_init.sql         # Initial schema migration
+├── scripts/
+│   └── init-db.sql              # DB schema bootstrap (reference)
 ├── Makefile                     # Dev/build/deploy targets
+├── CLAUDE.md
+├── CONTRIBUTING.md
+├── ARCHITECTURE.md
+├── DEPLOYMENT.md
 └── README.md
 ```"""
 
@@ -229,7 +225,7 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 | **Node.js** | >= 18 | [nodejs.org](https://nodejs.org) or `brew install node` |
 | **npm** | >= 9 | Comes with Node.js |
 | **Docker** | >= 24 | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| **Docker Compose** | >= 2 | Included with Docker Desktop |
+| **Supabase CLI** | latest | `brew install supabase/tap/supabase` or [docs](https://supabase.com/docs/guides/cli/getting-started) |
 | **Git** | >= 2 | `brew install git` or [git-scm.com](https://git-scm.com) |"""
     else:
         prereqs = """\
@@ -239,7 +235,7 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 | **Go** | >= 1.23 | [go.dev](https://go.dev/dl/) or `brew install go` |
 | **TinyGo** | >= 0.32 | [tinygo.org](https://tinygo.org/getting-started/install/) or `brew install tinygo` |
 | **Docker** | >= 24 | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| **Docker Compose** | >= 2 | Included with Docker Desktop |
+| **Supabase CLI** | latest | `brew install supabase/tap/supabase` or [docs](https://supabase.com/docs/guides/cli/getting-started) |
 | **Wrangler** | >= 3 | `npm install -g wrangler` |
 | **Git** | >= 2 | `brew install git` or [git-scm.com](https://git-scm.com) |"""
 
@@ -250,97 +246,65 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 | **Android Studio** | latest | [developer.android.com](https://developer.android.com/studio) (Android development) |"""
 
     # ── Run locally ───────────────────────────────────────────────
+    port = "3000" if is_nextjs else "5173"
     if is_nextjs:
         run_locally = f"""\
-### 1. Start infrastructure
+### Quick start
 
 ```bash
-docker compose up -d
+make dev
 ```
 
-This starts:
-- **PostgreSQL** on `localhost:5432` (user: `postgres`, password: `postgres`)
-- **Redis** on `localhost:6379`
-- **Mailpit** on `localhost:8025` (web UI) / `localhost:1025` (SMTP)
+This single command:
+1. Installs npm dependencies (if needed)
+2. Starts **Supabase** locally (Postgres, REST API, Studio, Inbucket)
+3. Starts the Next.js dev server
 
-The `scripts/init-db.sql` file automatically creates the `{schema}` schema and
-a scoped database role on first startup.
+Once running:
+- **App** at [http://localhost:3000](http://localhost:3000)
+- **Supabase Studio** at [http://localhost:54323](http://localhost:54323)
+- **Inbucket** (email testing) at [http://localhost:54324](http://localhost:54324)
 
-### 2. Configure environment
-
-```bash
-cp .env.example {env_file}
-```
-
-For local development with docker-compose, use these values:
-
-| Variable | Local value |
-|----------|-------------|
-| `DATABASE_URL` | `postgresql://{schema}_app:postgres@localhost:5432/postgres?search_path={schema}` |
-| `SUPABASE_URL` | Your Supabase project URL (or skip for DB-only local dev) |
-
-Fill in the remaining service keys from each provider's dashboard (see Service
-Checklist below).
-
-### 3. Install dependencies and start
+### Manual setup
 
 ```bash
-npm install
+make setup    # npm install + supabase start
 npm run dev
 ```
 
-The app is now running at **http://localhost:3000**."""
+Fill in any empty API keys in `.env.local` (see Service Checklist below)."""
     else:
         run_locally = f"""\
-### 1. Start infrastructure
+### Quick start
 
 ```bash
-docker compose up -d
+make dev
 ```
 
-This starts:
-- **PostgreSQL** on `localhost:5432` (user: `postgres`, password: `postgres`)
-- **Redis** on `localhost:6379`
-- **Mailpit** on `localhost:8025` (web UI) / `localhost:1025` (SMTP)
+This single command:
+1. Installs npm + Go dependencies (if needed)
+2. Starts **Supabase** locally (Postgres, REST API, Studio, Inbucket)
+3. Starts the Go API worker and React dev server concurrently
 
-The `scripts/init-db.sql` file automatically creates the `{schema}` schema and
-a scoped database role on first startup.
+Once running:
+- **Web app** at [http://localhost:5173](http://localhost:5173)
+- **API** at [http://localhost:8787](http://localhost:8787)
+- **Supabase Studio** at [http://localhost:54323](http://localhost:54323)
+- **Inbucket** (email testing) at [http://localhost:54324](http://localhost:54324)
 
-### 2. Configure environment
-
-```bash
-cp api/.env.example api/.env
-cp web/.env.example web/.env
-```
-
-For local development with docker-compose, point the API at the local Postgres
-and Redis instances (see the `.env.example` files for guidance).
-
-### 3. Start the API (terminal 1)
+### Manual setup
 
 ```bash
-cd api
-go mod tidy
-wrangler dev
-```
-
-The API worker is now running at **http://localhost:8787**.
-
-### 4. Start the web frontend (terminal 2)
-
-```bash
-cd web
-npm install
+make setup    # npm install + go mod tidy + supabase start
 npm run dev
 ```
 
-The web app is now running at **http://localhost:5173**.
-Vite automatically proxies `/api` requests to the Worker at `localhost:8787`."""
+Fill in any empty API keys in `api/.dev.vars` and `web/.env` (see Service Checklist below)."""
 
     mobile_section = ""
     if has_mobile:
         mobile_section = f"""
-### {"5" if not is_nextjs else "4"}. Start the mobile app (optional)
+### Start the mobile app (optional)
 
 ```bash
 cd mobile
@@ -350,28 +314,20 @@ npx expo start
 
 Press `i` for iOS simulator or `a` for Android emulator.
 Set `EXPO_PUBLIC_API_URL` in `mobile/.env` to point at your local API
-(`http://localhost:{"3000" if is_nextjs else "8787"}/api`).
+(`http://localhost:{port}/api`).
 """
 
     # ── Testing locally ───────────────────────────────────────────
     testing = """\
 ### Verify everything works
 
-1. **Database** — connect to Postgres and confirm the schema exists:
-   ```bash
-   docker compose exec postgres psql -U postgres -c '\\dn'
-   ```
+1. **Database** — open Supabase Studio at [http://localhost:54323](http://localhost:54323)
+   and confirm the schema exists.
 
-2. **Redis** — check the Redis connection:
-   ```bash
-   docker compose exec redis redis-cli ping
-   # → PONG
-   ```
+2. **Email** — send a test email via your app and check Inbucket:
+   Open **http://localhost:54324** to see captured emails.
 
-3. **Email** — send a test email via your app and check Mailpit:
-   Open **http://localhost:8025** to see captured emails.
-
-4. **API health** — hit the health endpoint:
+3. **API health** — hit the health endpoint:
    ```bash
    curl http://localhost:%s/health
    # → ok
@@ -429,12 +385,6 @@ Configure environment variables in the Cloudflare Pages dashboard for the web ap
 
 ## Getting Started
 
-### Clone and enter the project
-
-```bash
-cd {name}
-```
-
 {run_locally}
 {mobile_section}
 ## Testing Locally
@@ -447,14 +397,14 @@ This project includes a `Makefile` for frequently used operations:
 
 | Command | Description |
 |---------|-------------|
-| `make dev` | {"Start the Next.js dev server" if is_nextjs else "Run API and web in separate terminals (`make dev-api` / `make dev-web`)"} |
+| `make dev` | {"Start Supabase + Next.js dev server" if is_nextjs else "Start Supabase + API + web dev servers"} |
 | `make build` | {"Build for production" if is_nextjs else "Build the Worker WASM (requires TinyGo)"} |
 | `make lint` | {"Run ESLint and TypeScript checks" if is_nextjs else "Run TypeScript and Go vet checks"} |
 | `make test` | Run tests |
-| `make db` | Start local Postgres, Redis, and Mailpit |
-| `make db-stop` | Stop local infrastructure |
+| `make supabase-start` | Start local Supabase (Postgres, REST API, Studio) |
+| `make supabase-stop` | Stop local Supabase |
 | `make deploy` | {"Deploy to Vercel" if is_nextjs else "Deploy API and web to Cloudflare"} |
-| `make setup` | Install all dependencies |
+| `make setup` | Install all dependencies + start Supabase |
 
 ## API Documentation
 
@@ -480,7 +430,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA {schema}
 
 Set up each service and copy the credentials into your `{env_file}`:
 
-- [ ] **Supabase** — create project, run schema SQL above, copy URL + keys
 - [ ] **Clerk** — create application, copy publishable + secret keys
 - [ ] **Upstash** — create Redis database, copy REST URL + token
 - [ ] **Resend** — verify domain, copy API key
@@ -488,6 +437,8 @@ Set up each service and copy the credentials into your `{env_file}`:
 - [ ] **PostHog** — create project, copy project key
 - [ ] **Sentry** — create project, copy DSN
 - [ ] **BetterStack** — create source, copy ingestion token
+
+> Supabase runs locally via the CLI — no cloud account needed for development.
 
 ## Deploy
 

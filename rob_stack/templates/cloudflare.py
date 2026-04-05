@@ -3,7 +3,7 @@
 import json
 
 
-def generate_go_cloudflare(root, ctx: dict, write) -> None:
+def generate_go_cloudflare(root, ctx: dict, write, creds=None) -> None:
     name   = ctx["name"]
     title  = ctx["title"]
     schema = ctx["schema"]
@@ -39,6 +39,10 @@ def generate_go_cloudflare(root, ctx: dict, write) -> None:
     write(root, "api/.dev.vars.example",             _dev_vars_example(name, schema))
     write(root, "api/wrangler.toml",                 _worker_wrangler(name))
     write(root, "Makefile",                          _makefile())
+
+    if creds is not None:
+        write(root, "api/.dev.vars", _api_dev_vars(name, schema, creds))
+        write(root, "web/.env",     _web_env(creds))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1146,6 +1150,41 @@ BETTERSTACK_SOURCE_TOKEN=
 """
 
 
+def _api_dev_vars(name: str, schema: str, creds: dict) -> str:
+    g = creds.get
+    return f"""\
+# .dev.vars — local secrets for wrangler dev (NOT committed to git)
+ALLOWED_ORIGINS={g("ALLOWED_ORIGINS", "http://localhost:5173")}
+SUPABASE_URL={g("SUPABASE_URL", "")}
+SUPABASE_SERVICE_ROLE_KEY={g("SUPABASE_SERVICE_ROLE_KEY", "")}
+CLERK_SECRET_KEY={g("CLERK_SECRET_KEY", "")}
+CLERK_JWKS_URL={g("CLERK_JWKS_URL", "")}
+RESEND_API_KEY={g("RESEND_API_KEY", "")}
+RESEND_FROM_EMAIL={g("RESEND_FROM_EMAIL", "noreply@yourdomain.com")}
+R2_ACCOUNT_ID={g("R2_ACCOUNT_ID", "")}
+R2_ACCESS_KEY_ID={g("R2_ACCESS_KEY_ID", "")}
+R2_SECRET_ACCESS_KEY={g("R2_SECRET_ACCESS_KEY", "")}
+R2_BUCKET_NAME={g("R2_BUCKET_NAME", name)}
+R2_PUBLIC_URL=https://pub-XXXX.r2.dev
+UPSTASH_REDIS_REST_URL={g("UPSTASH_REDIS_REST_URL", "")}
+UPSTASH_REDIS_REST_TOKEN={g("UPSTASH_REDIS_REST_TOKEN", "")}
+POSTHOG_KEY={g("POSTHOG_KEY", "")}
+POSTHOG_HOST={g("POSTHOG_HOST", "https://us.i.posthog.com")}
+BETTERSTACK_SOURCE_TOKEN={g("BETTERSTACK_SOURCE_TOKEN", "")}
+"""
+
+
+def _web_env(creds: dict) -> str:
+    g = creds.get
+    return f"""\
+VITE_API_URL={g("VITE_API_URL", "http://localhost:8787/api")}
+VITE_CLERK_PUBLISHABLE_KEY={g("CLERK_PUBLISHABLE_KEY", "")}
+VITE_POSTHOG_KEY={g("POSTHOG_KEY", "")}
+VITE_POSTHOG_HOST={g("POSTHOG_HOST", "https://us.i.posthog.com")}
+VITE_SENTRY_DSN={g("SENTRY_DSN", "")}
+"""
+
+
 def _worker_wrangler(name: str) -> str:
     return f"""\
 # Cloudflare Worker — Go API
@@ -1172,9 +1211,15 @@ pattern = "{name}-api.yourusername.workers.dev/*"
 
 def _makefile() -> str:
     return """\
-.PHONY: dev dev-api dev-web build deploy lint test db db-stop setup tinygo-check
+.PHONY: dev dev-api dev-web build deploy lint test setup supabase-start supabase-stop tinygo-check
 
-# Run both locally (requires two terminals, or use tmux/overmind)
+dev:
+\t@if [ ! -d web/node_modules ]; then cd web && npm install; fi
+\t@if [ ! -d node_modules ]; then npm install; fi
+\t@if [ ! -f api/go.sum ]; then cd api && go mod tidy; fi
+\t@supabase start
+\tnpm run dev
+
 dev-api:
 \tcd api && wrangler dev
 
@@ -1196,14 +1241,17 @@ lint:
 test:
 \tcd api && go test ./...
 
-db:
-\tdocker compose up -d
+supabase-start:
+\tsupabase start
 
-db-stop:
-\tdocker compose down
+supabase-stop:
+\tsupabase stop
 
 setup:
-\tcd web && npm install && cd ../api && go mod tidy && npm install
+\tcd web && npm install
+\tcd api && go mod tidy
+\tnpm install
+\tsupabase start
 
 # Install TinyGo reminder
 tinygo-check:
