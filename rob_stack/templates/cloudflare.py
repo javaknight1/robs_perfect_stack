@@ -34,6 +34,7 @@ def generate_go_cloudflare(root, ctx: dict, write) -> None:
     write(root, "api/internal/storage/r2.go",        _go_r2(module))
     write(root, "api/internal/analytics/posthog.go", _go_posthog(module))
     write(root, "api/internal/logger/betterstack.go", _go_betterstack(module))
+    write(root, "api/internal/openapi/spec.go",      _go_openapi(module))
     write(root, "api/.env.example",                  _api_env_example(name, schema))
     write(root, "api/.dev.vars.example",             _dev_vars_example(name, schema))
     write(root, "api/wrangler.toml",                 _worker_wrangler(name))
@@ -311,6 +312,7 @@ import (
 \t"github.com/syumai/workers"
 
 \tclerkMW "{module}/internal/middleware"
+\t"{module}/internal/openapi"
 )
 
 func newRouter() http.Handler {{
@@ -327,6 +329,9 @@ func newRouter() http.Handler {{
 \tr.Get("/health", func(w http.ResponseWriter, r *http.Request) {{
 \t\tw.Write([]byte("ok"))
 \t}})
+
+\tr.Get("/api/docs", openapi.ServeSwaggerUI)
+\tr.Get("/api/docs/openapi.json", openapi.ServeSpec)
 
 \tr.Route("/api", func(r chi.Router) {{
 \t\tr.Use(clerkMW.RequireAuth)
@@ -1013,6 +1018,78 @@ func (c *Client) Error(msg string, fields ...map[string]any) {
 """
 
 
+def _go_openapi(module: str) -> str:
+    return """\
+// internal/openapi/spec.go
+//
+// Programmatic OpenAPI 3.0 spec builder.
+// TinyGo does not support reflection-based tools like swaggo,
+// so we construct the spec as plain Go maps.
+package openapi
+
+import (
+\t"encoding/json"
+\t"net/http"
+)
+
+// BuildSpec returns the OpenAPI 3.0 specification as a map.
+func BuildSpec() map[string]interface{} {
+\treturn map[string]interface{}{
+\t\t"openapi": "3.0.0",
+\t\t"info": map[string]interface{}{
+\t\t\t"title":   "API",
+\t\t\t"version": "0.1.0",
+\t\t},
+\t\t"paths": map[string]interface{}{
+\t\t\t"/health": map[string]interface{}{
+\t\t\t\t"get": map[string]interface{}{
+\t\t\t\t\t"summary":     "Health check",
+\t\t\t\t\t"description": "Returns the health status of the API.",
+\t\t\t\t\t"responses": map[string]interface{}{
+\t\t\t\t\t\t"200": map[string]interface{}{
+\t\t\t\t\t\t\t"description": "API is healthy",
+\t\t\t\t\t\t\t"content": map[string]interface{}{
+\t\t\t\t\t\t\t\t"text/plain": map[string]interface{}{
+\t\t\t\t\t\t\t\t\t"schema": map[string]interface{}{
+\t\t\t\t\t\t\t\t\t\t"type":    "string",
+\t\t\t\t\t\t\t\t\t\t"example": "ok",
+\t\t\t\t\t\t\t\t\t},
+\t\t\t\t\t\t\t\t},
+\t\t\t\t\t\t\t},
+\t\t\t\t\t\t},
+\t\t\t\t\t},
+\t\t\t\t},
+\t\t\t},
+\t\t},
+\t}
+}
+
+// ServeSpec writes the OpenAPI JSON spec to the response.
+func ServeSpec(w http.ResponseWriter, r *http.Request) {
+\tw.Header().Set("Content-Type", "application/json")
+\tjson.NewEncoder(w).Encode(BuildSpec())
+}
+
+// ServeSwaggerUI returns an HTML page that loads Swagger UI from a CDN.
+func ServeSwaggerUI(w http.ResponseWriter, r *http.Request) {
+\tw.Header().Set("Content-Type", "text/html; charset=utf-8")
+\tw.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({ url: "/api/docs/openapi.json", dom_id: "#swagger-ui" });</script>
+</body>
+</html>`))
+}
+"""
+
+
 def _api_env_example(name: str, schema: str) -> str:
     return f"""\
 # ── Cloudflare Worker env vars (set via wrangler secret or dashboard) ──
@@ -1095,7 +1172,7 @@ pattern = "{name}-api.yourusername.workers.dev/*"
 
 def _makefile() -> str:
     return """\
-.PHONY: dev dev-api dev-web build deploy
+.PHONY: dev dev-api dev-web build deploy lint test db db-stop setup tinygo-check
 
 # Run both locally (requires two terminals, or use tmux/overmind)
 dev-api:
@@ -1112,6 +1189,21 @@ build:
 deploy: build
 \tcd api && wrangler deploy
 \tcd web && wrangler pages deploy dist
+
+lint:
+\tcd web && npx tsc --noEmit && cd ../api && go vet ./...
+
+test:
+\tcd api && go test ./...
+
+db:
+\tdocker compose up -d
+
+db-stop:
+\tdocker compose down
+
+setup:
+\tcd web && npm install && cd ../api && go mod tidy && npm install
 
 # Install TinyGo reminder
 tinygo-check:

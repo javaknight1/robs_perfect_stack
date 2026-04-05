@@ -35,6 +35,10 @@ def generate_nextjs(root, ctx: dict, write) -> None:
     write(root, "src/app/api/health/route.ts", _health_route())
     write(root, "eslint.config.mjs",  _eslint_config())
     write(root, "src/emails/welcome.tsx", _welcome_email())
+    write(root, "src/lib/swagger.ts",  _swagger_config(title))
+    write(root, "src/app/api-docs/page.tsx", _api_doc_page())
+    write(root, "src/app/api/docs/route.ts", _openapi_route())
+    write(root, "Makefile",            _makefile_nextjs())
 
 
 # ───────────────────────────────���──────────────────────────────────
@@ -64,12 +68,15 @@ def _package_json(name: str) -> str:
             "posthog-node": "^4",
             "@sentry/nextjs": "^8",
             "@react-email/components": "^0",
+            "next-swagger-doc": "^0",
+            "swagger-ui-react": "^5",
         },
         "devDependencies": {
             "typescript": "^5",
             "@types/node": "^22",
             "@types/react": "^19",
             "@types/react-dom": "^19",
+            "@types/swagger-ui-react": "^4",
             "tailwindcss": "^4",
             "@tailwindcss/postcss": "^4",
             "eslint": "^9",
@@ -148,6 +155,8 @@ const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
   "/api/webhooks(.*)",
+  "/api-docs(.*)",
+  "/api/docs(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
@@ -515,6 +524,24 @@ def _health_route() -> str:
     return '''\
 import { NextResponse } from "next/server";
 
+/**
+ * @swagger
+ * /api/health:
+ *   get:
+ *     summary: Health check
+ *     description: Returns the health status of the API.
+ *     responses:
+ *       200:
+ *         description: API is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ */
 export async function GET() {
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }
@@ -573,3 +600,87 @@ export default function WelcomeEmail({ name = "there", actionUrl = "/" }: Welcom
   );
 }
 '''
+
+
+def _swagger_config(title: str) -> str:
+    return f'''\
+import {{ createSwaggerSpec }} from "next-swagger-doc";
+
+export function getApiDocs() {{
+  return createSwaggerSpec({{
+    apiFolder: "src/app/api",
+    definition: {{
+      openapi: "3.0.0",
+      info: {{
+        title: "{title} API",
+        version: "0.1.0",
+      }},
+    }},
+  }});
+}}
+'''
+
+
+def _api_doc_page() -> str:
+    return '''\
+"use client";
+
+import SwaggerUI from "swagger-ui-react";
+import "swagger-ui-react/swagger-ui.css";
+import { useEffect, useState } from "react";
+
+export default function ApiDocsPage() {
+  const [spec, setSpec] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    fetch("/api/docs")
+      .then((res) => res.json())
+      .then(setSpec);
+  }, []);
+
+  if (!spec) return <p>Loading...</p>;
+  return <SwaggerUI spec={spec} />;
+}
+'''
+
+
+def _openapi_route() -> str:
+    return '''\
+import { NextResponse } from "next/server";
+import { getApiDocs } from "@/lib/swagger";
+
+export async function GET() {
+  const spec = getApiDocs();
+  return NextResponse.json(spec);
+}
+'''
+
+
+def _makefile_nextjs() -> str:
+    return """\
+.PHONY: dev build lint test db db-stop deploy setup
+
+dev:
+\tnpm run dev
+
+build:
+\tnpm run build
+
+lint:
+\tnpm run lint && npx tsc --noEmit
+
+test:
+\tnpm test
+
+db:
+\tdocker compose up -d
+
+db-stop:
+\tdocker compose down
+
+deploy:
+\tvercel --prod
+
+setup:
+\tnpm install
+"""

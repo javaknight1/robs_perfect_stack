@@ -147,8 +147,11 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │   │   │   ├── layout.tsx  # Centered auth layout
 │   │   │   ├── sign-in/[[...sign-in]]/page.tsx
 │   │   │   └── sign-up/[[...sign-up]]/page.tsx
+│   │   ├── api-docs/
+│   │   │   └── page.tsx   # Swagger UI page
 │   │   └── api/
-│   │       └── health/route.ts  # Health endpoint
+│   │       ├── health/route.ts  # Health endpoint
+│   │       └── docs/route.ts    # OpenAPI JSON spec endpoint
 │   ├── components/
 │   │   └── providers.tsx   # Client-side provider wrappers
 │   ├── emails/
@@ -158,7 +161,8 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │       ├── redis.ts        # Upstash Redis helpers
 │       ├── resend.ts       # Email via Resend
 │       ├── r2.ts           # Cloudflare R2 storage (S3 SDK)
-│       └── posthog.ts      # Server-side analytics
+│       ├── posthog.ts      # Server-side analytics
+│       └── swagger.ts      # OpenAPI spec config
 ├── middleware.ts            # Clerk auth middleware
 ├── instrumentation.ts       # Sentry instrumentation hook
 {mobile_tree}├── docker-compose.yml       # Local Postgres, Redis, Mailpit
@@ -168,6 +172,7 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │   └── migrations/
 │       └── 001_init.sql     # Initial schema migration
 ├── .env.example             # All required environment variables
+├── Makefile                 # Dev/build/deploy targets
 ├── package.json
 ├── next.config.ts
 ├── tailwind.config.ts
@@ -190,7 +195,8 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │   │   ├── email/resend.go      # Resend email client
 │   │   ├── storage/r2.go        # Cloudflare R2 storage
 │   │   ├── analytics/posthog.go # PostHog event capture
-│   │   └── logger/betterstack.go # BetterStack log shipping
+│   │   ├── logger/betterstack.go # BetterStack log shipping
+│   │   └── openapi/spec.go     # OpenAPI 3.0 spec + Swagger UI
 │   ├── .env.example
 │   ├── .dev.vars.example        # Local secrets for wrangler dev
 │   ├── go.mod
@@ -434,6 +440,28 @@ cd {name}
 ## Testing Locally
 
 {testing}
+
+## Common Commands
+
+This project includes a `Makefile` for frequently used operations:
+
+| Command | Description |
+|---------|-------------|
+| `make dev` | {"Start the Next.js dev server" if is_nextjs else "Run API and web in separate terminals (`make dev-api` / `make dev-web`)"} |
+| `make build` | {"Build for production" if is_nextjs else "Build the Worker WASM (requires TinyGo)"} |
+| `make lint` | {"Run ESLint and TypeScript checks" if is_nextjs else "Run TypeScript and Go vet checks"} |
+| `make test` | Run tests |
+| `make db` | Start local Postgres, Redis, and Mailpit |
+| `make db-stop` | Stop local infrastructure |
+| `make deploy` | {"Deploy to Vercel" if is_nextjs else "Deploy API and web to Cloudflare"} |
+| `make setup` | Install all dependencies |
+
+## API Documentation
+
+Interactive API docs are available at {"[/api-docs](http://localhost:3000/api-docs)" if is_nextjs else "[/api/docs](http://localhost:8787/api/docs)"} when the app is running.
+
+The OpenAPI spec is served at {"`/api/docs`" if is_nextjs else "`/api/docs/openapi.json`"} as JSON. Add `@swagger` JSDoc
+annotations to your {"API route handlers" if is_nextjs else "endpoint definitions"} to document new endpoints.
 
 ## Supabase Schema Setup (Production)
 

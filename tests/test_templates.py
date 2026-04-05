@@ -50,6 +50,56 @@ class TestNextjsTemplates:
         assert "supabaseAdmin" in code
         assert "supabase" in code
 
+    def test_package_json_has_swagger_deps(self):
+        from rob_stack.templates.nextjs import _package_json
+        data = json.loads(_package_json("test-app"))
+        assert "next-swagger-doc" in data["dependencies"]
+        assert "swagger-ui-react" in data["dependencies"]
+        assert "@types/swagger-ui-react" in data["devDependencies"]
+
+    def test_swagger_config_uses_title(self):
+        from rob_stack.templates.nextjs import _swagger_config
+        code = _swagger_config("My App")
+        assert "createSwaggerSpec" in code
+        assert "My App API" in code
+
+    def test_api_doc_page_renders_swagger(self):
+        from rob_stack.templates.nextjs import _api_doc_page
+        code = _api_doc_page()
+        assert "SwaggerUI" in code
+        assert '"use client"' in code
+        assert "/api/docs" in code
+
+    def test_openapi_route_returns_spec(self):
+        from rob_stack.templates.nextjs import _openapi_route
+        code = _openapi_route()
+        assert "getApiDocs" in code
+        assert "NextResponse.json" in code
+
+    def test_health_route_has_swagger_annotation(self):
+        from rob_stack.templates.nextjs import _health_route
+        code = _health_route()
+        assert "@swagger" in code
+        assert "/api/health" in code
+
+    def test_middleware_allows_api_docs(self):
+        from rob_stack.templates.nextjs import _middleware
+        mw = _middleware()
+        assert "/api-docs" in mw
+        assert "/api/docs" in mw
+
+    def test_makefile_nextjs(self):
+        from rob_stack.templates.nextjs import _makefile_nextjs
+        mk = _makefile_nextjs()
+        assert "dev:" in mk
+        assert "build:" in mk
+        assert "lint:" in mk
+        assert "test:" in mk
+        assert "db:" in mk
+        assert "db-stop:" in mk
+        assert "deploy:" in mk
+        assert "setup:" in mk
+
 
 class TestCloudflareTemplates:
     def test_go_mod_uses_module(self):
@@ -108,6 +158,36 @@ class TestCloudflareTemplates:
         assert "Accept-Profile" in code
         assert "Content-Profile" in code
         assert '"my_app"' in code
+
+    def test_go_openapi_spec(self):
+        from rob_stack.templates.cloudflare import _go_openapi
+        code = _go_openapi("github.com/test/app")
+        assert "BuildSpec" in code
+        assert "ServeSpec" in code
+        assert "ServeSwaggerUI" in code
+        assert "/health" in code
+        assert "openapi" in code
+        assert "3.0.0" in code
+
+    def test_go_main_has_openapi_routes(self):
+        from rob_stack.templates.cloudflare import _go_main
+        code = _go_main("github.com/test/app", "test_app")
+        assert "openapi.ServeSwaggerUI" in code
+        assert "openapi.ServeSpec" in code
+        assert "/api/docs" in code
+
+    def test_makefile_has_all_targets(self):
+        from rob_stack.templates.cloudflare import _makefile
+        mk = _makefile()
+        assert "dev-api:" in mk
+        assert "dev-web:" in mk
+        assert "build:" in mk
+        assert "deploy:" in mk
+        assert "lint:" in mk
+        assert "test:" in mk
+        assert "db:" in mk
+        assert "db-stop:" in mk
+        assert "setup:" in mk
 
 
 class TestMobileTemplates:
