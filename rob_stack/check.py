@@ -94,6 +94,8 @@ def _load_source_files(root: Path, extensions: tuple[str, ...]) -> str:
         if any(s in p.parts for s in skip):
             continue
         if p.suffix.lstrip(".") in extensions:
+            if p.stat().st_size > 1_000_000:
+                continue
             try:
                 parts.append(p.read_text(errors="ignore"))
             except Exception:
@@ -136,7 +138,8 @@ _CLERK_JS = {"@clerk/nextjs", "@clerk/clerk-react", "@clerk/clerk-expo"}
 _CLERK_GO = {"clerk-sdk-go"}
 _CLERK_ENV = {"CLERK_SECRET_KEY", "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"}
 _AUTH_ALT = {"next-auth", "auth0", "@auth0/nextjs-auth0", "lucia", "better-auth",
-             "firebase-admin", "supabase/auth-helpers"}
+             "firebase-admin", "supabase/auth-helpers",
+             "@supabase/auth-helpers-nextjs"}
 
 _RESEND_JS = {"resend"}
 _RESEND_ENV = {"RESEND_API_KEY"}
@@ -145,11 +148,12 @@ _EMAIL_ALT = {"nodemailer", "@sendgrid/mail", "@aws-sdk/client-ses",
 
 _R2_JS = {"@aws-sdk/client-s3"}
 _R2_ENV = {"R2_ACCOUNT_ID", "R2_BUCKET_NAME"}
-_STORAGE_ALT = {"@google-cloud/storage", "aws-sdk", "multer", "@vercel/blob"}
+_STORAGE_ALT = {"@google-cloud/storage", "aws-sdk", "multer", "@vercel/blob", "uploadthing"}
 
 _POSTHOG_JS = {"posthog-js", "posthog-node"}
 _POSTHOG_ENV = {"POSTHOG_KEY", "NEXT_PUBLIC_POSTHOG_KEY", "VITE_POSTHOG_KEY"}
-_ANALYTICS_ALT = {"mixpanel", "@amplitude/analytics-browser", "ga-4", "gtag"}
+_ANALYTICS_ALT = {"mixpanel", "@amplitude/analytics-browser", "ga-4", "gtag",
+                   "@vercel/analytics"}
 
 _SENTRY_JS = {"@sentry/nextjs", "@sentry/react", "@sentry/react-native",
               "@sentry/node", "@sentry/browser"}
@@ -243,8 +247,11 @@ def check_r2(js_deps: set[str], go_mod: str, env: str, source: str = "") -> Serv
     return ServiceResult("Cloudflare R2", "fail", "Not detected — add @aws-sdk/client-s3 with R2 env vars")
 
 
-def check_posthog(js_deps: set[str], env: str) -> ServiceResult:
+def check_posthog(js_deps: set[str], env: str, source: str = "") -> ServiceResult:
     if _has_any(js_deps, _POSTHOG_JS):
+        if source and "posthog.init(" not in source and "PostHog(" not in source:
+            return ServiceResult("PostHog", "warn",
+                                 "posthog-js in deps but initialization not found in source")
         return ServiceResult("PostHog", "pass", "posthog-js or posthog-node detected")
     if _env_has_any(env, _POSTHOG_ENV):
         return ServiceResult("PostHog", "warn", "POSTHOG_KEY in env but posthog-js not in deps")
@@ -255,9 +262,12 @@ def check_posthog(js_deps: set[str], env: str) -> ServiceResult:
     return ServiceResult("PostHog", "fail", "Not detected — add posthog-js")
 
 
-def check_sentry(js_deps: set[str], env: str) -> ServiceResult:
+def check_sentry(js_deps: set[str], env: str, source: str = "") -> ServiceResult:
     if _has_any(js_deps, _SENTRY_JS):
         pkg = _has_any(js_deps, _SENTRY_JS)
+        if source and "Sentry.init(" not in source:
+            return ServiceResult("Sentry", "warn",
+                                 f"{pkg!r} in deps but Sentry.init() not found in source")
         return ServiceResult("Sentry", "pass", f"{pkg!r} detected")
     if _env_has_any(env, _SENTRY_ENV):
         return ServiceResult("Sentry", "warn", "SENTRY_DSN in env but Sentry SDK not in deps")
@@ -284,6 +294,8 @@ def check_hosting(root: Path, arch: str) -> list[ServiceResult]:
     has_vercel = (root / "vercel.json").exists()
     has_wrangler = any(root.rglob("wrangler.toml"))
     has_railway = (root / "railway.toml").exists()
+    has_fly = (root / "fly.toml").exists()
+    has_heroku = (root / "Procfile").exists()
 
     if arch == "nextjs":
         if has_vercel:
@@ -294,6 +306,9 @@ def check_hosting(root: Path, arch: str) -> list[ServiceResult]:
         if has_railway:
             results.append(ServiceResult("Hosting", "warn",
                                          "railway.toml found — Next.js apps should deploy to Vercel"))
+        if has_fly:
+            results.append(ServiceResult("Hosting", "warn",
+                                         "fly.toml found — Next.js apps should deploy to Vercel"))
 
     elif arch == "go_react":
         if has_wrangler:
@@ -308,8 +323,12 @@ def check_hosting(root: Path, arch: str) -> list[ServiceResult]:
         if has_vercel:
             results.append(ServiceResult("Hosting", "warn",
                                          "vercel.json found — Go+React apps use Cloudflare, not Vercel"))
+        if has_fly:
+            results.append(ServiceResult("Hosting", "warn",
+                                         "fly.toml found — migrate to Cloudflare Workers"))
     else:
-        for name, flag in [("Vercel", has_vercel), ("Cloudflare", has_wrangler), ("Railway", has_railway)]:
+        for name, flag in [("Vercel", has_vercel), ("Cloudflare", has_wrangler),
+                           ("Railway", has_railway), ("Fly.io", has_fly), ("Heroku", has_heroku)]:
             if flag:
                 results.append(ServiceResult(f"Hosting ({name})", "warn",
                                              f"{name} config detected but architecture is unknown"))
@@ -390,6 +409,22 @@ def render_report(report: CheckReport) -> str:
     return "\n".join(lines)
 
 
+def render_json(report: CheckReport) -> str:
+    all_results = report.services + report.hosting
+    if report.mobile:
+        all_results.append(report.mobile)
+    passed, total = report.score
+    return json.dumps({
+        "path": report.path,
+        "arch": report.arch,
+        "score": {"passed": passed, "total": total, "percent": int(passed / total * 100) if total else 0},
+        "checks": [
+            {"name": r.name, "status": r.status, "message": r.message, "alternative": r.alternative}
+            for r in all_results
+        ],
+    }, indent=2)
+
+
 def render_migration_prompt(report: CheckReport) -> str:
     failing = [r for r in report.services + report.hosting if r.status == "fail"]
     warning = [r for r in report.services + report.hosting if r.status == "warn"]
@@ -434,7 +469,7 @@ Target stack:
 
 For each missing service:
 1. Install the correct package
-2. Create src/lib/<service>.ts with a typed, reusable client
+2. Create {"api/internal/<service>/<service>.go" if report.arch == "go_react" else "src/lib/<service>.ts"} with a typed, reusable client
 3. Add all required env vars to .env.example
 4. Wire the client into the app (layout providers, middleware, etc.)
 
@@ -449,7 +484,7 @@ Do not change any business logic — only swap infrastructure clients.
 # Main entry
 # ──────────────────────────────────────────────────────────────────
 
-def run_check(path: str) -> None:
+def run_check(path: str, service_filter: Optional[str] = None, json_output: bool = False) -> None:
     root = Path(path).resolve()
     if not root.exists():
         print(f"❌  Path not found: {path}")
@@ -468,21 +503,45 @@ def run_check(path: str) -> None:
     report = CheckReport(path=str(root), arch=arch)
 
     # ── Run checks ───────────────────────────────────────────────
-    report.services = [
-        check_supabase(js_deps, go_mod, env_text, source_text),
-        check_schema_isolation(env_text, source_text),
-        check_redis(js_deps, go_mod, env_text, source_text),
-        check_clerk(js_deps, go_mod, env_text),
-        check_resend(js_deps, go_mod, env_text, source_text),
-        check_r2(js_deps, go_mod, env_text, source_text),
-        check_posthog(js_deps, env_text),
-        check_sentry(js_deps, env_text),
-        check_betterstack(env_text),
-    ]
-    report.hosting = check_hosting(root, arch)
-    report.mobile = check_mobile(root, js_deps)
+    all_service_checks = {
+        "supabase":  lambda: [check_supabase(js_deps, go_mod, env_text, source_text),
+                              check_schema_isolation(env_text, source_text)],
+        "redis":     lambda: [check_redis(js_deps, go_mod, env_text, source_text)],
+        "clerk":     lambda: [check_clerk(js_deps, go_mod, env_text)],
+        "resend":    lambda: [check_resend(js_deps, go_mod, env_text, source_text)],
+        "r2":        lambda: [check_r2(js_deps, go_mod, env_text, source_text)],
+        "posthog":   lambda: [check_posthog(js_deps, env_text, source_text)],
+        "sentry":    lambda: [check_sentry(js_deps, env_text, source_text)],
+        "betterstack": lambda: [check_betterstack(env_text)],
+    }
+
+    if service_filter:
+        key = service_filter.lower().replace(" ", "")
+        if key not in all_service_checks:
+            print(f"❌  Unknown service: {service_filter!r}")
+            print(f"    Available: {', '.join(sorted(all_service_checks))}")
+            sys.exit(1)
+        report.services = all_service_checks[key]()
+        report.hosting = []
+    else:
+        report.services = [
+            check_supabase(js_deps, go_mod, env_text, source_text),
+            check_schema_isolation(env_text, source_text),
+            check_redis(js_deps, go_mod, env_text, source_text),
+            check_clerk(js_deps, go_mod, env_text),
+            check_resend(js_deps, go_mod, env_text, source_text),
+            check_r2(js_deps, go_mod, env_text, source_text),
+            check_posthog(js_deps, env_text, source_text),
+            check_sentry(js_deps, env_text, source_text),
+            check_betterstack(env_text),
+        ]
+        report.hosting = check_hosting(root, arch)
+        report.mobile = check_mobile(root, js_deps)
 
     # ── Render ───────────────────────────────────────────────────
+    if json_output:
+        print(render_json(report))
+        return
     print(render_report(report))
     migration = render_migration_prompt(report)
     if migration:

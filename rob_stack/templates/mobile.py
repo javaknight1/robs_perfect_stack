@@ -3,20 +3,21 @@
 import json
 
 
-def generate_mobile(root, ctx: dict, write) -> None:
+def generate_mobile(root, ctx: dict, write, is_nextjs: bool = True) -> None:
     name  = ctx["name"]
     title = ctx["title"]
+    github_user = ctx.get("github_user", "yourusername") or "yourusername"
 
     print("\n📱 Generating Expo mobile app...")
 
     write(root, "mobile/package.json",          _package_json(name))
-    write(root, "mobile/app.json",              _app_json(name, title))
+    write(root, "mobile/app.json",              _app_json(name, title, github_user))
     write(root, "mobile/tsconfig.json",         _tsconfig())
     write(root, "mobile/app/_layout.tsx",       _root_layout())
     write(root, "mobile/app/index.tsx",         _index())
     write(root, "mobile/app/(auth)/sign-in.tsx", _sign_in())
     write(root, "mobile/lib/api.ts",            _api_client())
-    write(root, "mobile/.env.example",          _env_example())
+    write(root, "mobile/.env.example",          _env_example(is_nextjs))
 
 
 def _package_json(name: str) -> str:
@@ -47,8 +48,8 @@ def _package_json(name: str) -> str:
     }, indent=2)
 
 
-def _app_json(name: str, title: str) -> str:
-    bundle = f"com.yourusername.{name.replace('-', '')}"
+def _app_json(name: str, title: str, github_user: str = "yourusername") -> str:
+    bundle = f"com.{github_user}.{name.replace('-', '')}"
     return json.dumps({
         "expo": {
             "name": title,
@@ -82,7 +83,14 @@ def _root_layout() -> str:
     return '''\
 import { ClerkProvider } from "@clerk/clerk-expo";
 import * as SecureStore from "expo-secure-store";
+import * as Sentry from "@sentry/react-native";
+import { PostHogProvider } from "posthog-react-native";
 import { Slot } from "expo-router";
+
+Sentry.init({
+  dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+  tracesSampleRate: 1.0,
+});
 
 const tokenCache = {
   async getToken(key: string) { return SecureStore.getItemAsync(key); },
@@ -95,7 +103,12 @@ export default function RootLayout() {
       publishableKey={process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY!}
       tokenCache={tokenCache}
     >
-      <Slot />
+      <PostHogProvider
+        apiKey={process.env.EXPO_PUBLIC_POSTHOG_KEY!}
+        options={{ host: process.env.EXPO_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com" }}
+      >
+        <Slot />
+      </PostHogProvider>
     </ClerkProvider>
   );
 }
@@ -141,7 +154,8 @@ def _sign_in() -> str:
     return '''\
 import { useSignIn } from "@clerk/clerk-expo";
 import { useRouter } from "expo-router";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, useState } from "react-native";
+import { useState } from "react";
+import { View, Text, TextInput, TouchableOpacity, StyleSheet } from "react-native";
 
 export default function SignInScreen() {
   const { signIn, setActive, isLoaded } = useSignIn();
@@ -221,8 +235,12 @@ def _api_client() -> str:
     )
 
 
-def _env_example() -> str:
-    return """\
-EXPO_PUBLIC_API_URL=http://localhost:8787/api
+def _env_example(is_nextjs: bool = True) -> str:
+    port = "3000" if is_nextjs else "8787"
+    return f"""\
+EXPO_PUBLIC_API_URL=http://localhost:{port}/api
 EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_
+EXPO_PUBLIC_POSTHOG_KEY=phc_
+EXPO_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+EXPO_PUBLIC_SENTRY_DSN=https://
 """

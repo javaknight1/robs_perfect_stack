@@ -82,10 +82,12 @@ cd ~/projects
 rob-stack new
 ```
 
-You will be asked three questions:
+You will be asked four questions:
 
 ```
 Project name (kebab-case): my-app
+
+Description (one-liner for README / package.json): A web app for tracking leagues
 
 Architecture:
   1. Next.js  ──▶  Vercel
@@ -151,7 +153,11 @@ my-app/
 ├── vercel.json
 ├── next.config.ts              # Sentry integrated
 ├── tailwind.config.ts
-└── tsconfig.json
+├── tsconfig.json
+├── docker-compose.yml          # Local dev services
+├── scripts/init-db.sql         # Supabase schema setup SQL
+├── README.md                   # Project README with setup instructions
+└── .gitignore
 ```
 
 **Go + React:**
@@ -175,6 +181,9 @@ my-app/
 │   ├── wrangler.toml           # Cloudflare Worker config
 │   └── .env.example
 ├── Makefile                    # build, deploy, dev targets
+├── docker-compose.yml          # Local dev services
+├── scripts/init-db.sql         # Supabase schema setup SQL
+├── README.md                   # Project README with setup instructions
 └── .gitignore
 ```
 
@@ -340,9 +349,9 @@ All file templates live in `rob_stack/templates/`:
 | File | Contains |
 |---|---|
 | `nextjs.py` | All Next.js file templates |
-| `go_cloudflare.py` | All Go + CF Workers + Pages templates |
+| `cloudflare.py` | All Go + CF Workers + Pages templates |
 | `mobile.py` | All Expo templates |
-| `shared.py` | `.gitignore`, `README.md` |
+| `shared.py` | `.gitignore`, `docker-compose.yml`, `init-db.sql`, `README.md` |
 
 To add a new file to every generated project, add a template function and call `write()` inside the relevant `generate_*` function. To add a new service to the conformance checker, add a `check_<service>()` function in `check.py` and register it in `run_check()`.
 
@@ -353,13 +362,14 @@ To add a new file to every generated project, add a template function and call `
 ```
 rob-stack/
 ├── pyproject.toml                  # Package config; defines `rob-stack` CLI entry point
+├── TODO.md                         # Project roadmap and planned features
 └── rob_stack/
     ├── cli.py                      # Entry point: routes new | check | --help
     ├── generate.py                 # Interactive prompts + file writing logic
     ├── check.py                    # Conformance checker + migration prompt generator
     └── templates/
-        ├── shared.py               # Shared templates (.gitignore, README)
+        ├── shared.py               # Shared templates (.gitignore, docker-compose, init-db, README)
         ├── nextjs.py               # Next.js file templates
-        ├── go_cloudflare.py        # Go + Cloudflare templates
+        ├── cloudflare.py           # Go + Cloudflare templates
         └── mobile.py               # Expo mobile templates
 ```

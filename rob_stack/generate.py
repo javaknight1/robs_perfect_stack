@@ -1,6 +1,5 @@
 """Project generation — `rob-stack new`"""
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +8,11 @@ from .templates.shared import gitignore, readme, docker_compose, init_db_sql
 from .templates.nextjs import generate_nextjs
 from .templates.cloudflare import generate_go_cloudflare
 from .templates.mobile import generate_mobile
+from .templates.ci import (
+    github_ci_nextjs, github_ci_go,
+    github_deploy_nextjs, github_deploy_go,
+    concurrent_dev_package_json,
+)
 
 
 def ask(prompt: str) -> str:
@@ -34,7 +38,7 @@ def schema_name(name: str) -> str:
     return name.replace("-", "_")
 
 
-def run_generate() -> None:
+def run_generate(dry_run: bool = False) -> None:
     print()
     print("╔══════════════════════════════════════╗")
     print("║      🚀  Rob's Stack Generator       ║")
@@ -64,9 +68,26 @@ def run_generate() -> None:
     mob_raw = ask("Include Expo mobile app? [y/n]: ").lower()
     has_mobile = mob_raw.startswith("y")
 
+    # ── GitHub username (Go only) ──────────────────────────────────
+    github_user = ""
+    if not is_nextjs:
+        github_user = ask("GitHub username (for go.mod module path): ")
+        if not github_user:
+            github_user = "yourusername"
+
+    # ── Dry run writer ─────────────────────────────────────────────
+    file_count = [0]
+    if dry_run:
+        def dry_write(base, rel, content):
+            file_count[0] += 1
+            print(f"  [dry-run] {rel}")
+        writer = dry_write
+    else:
+        writer = write
+
     # ── Validate destination ───────────────────────────────────────
     root = Path.cwd() / name
-    if root.exists():
+    if not dry_run and root.exists():
         print(f"\n❌  Directory {name!r} already exists.")
         sys.exit(1)
 
@@ -76,20 +97,35 @@ def run_generate() -> None:
         "title": title_case(name),
         "schema": schema_name(name),
         "description": description,
+        "github_user": github_user,
     }
 
     if is_nextjs:
-        generate_nextjs(root, ctx, write)
+        generate_nextjs(root, ctx, writer)
     else:
-        generate_go_cloudflare(root, ctx, write)
+        generate_go_cloudflare(root, ctx, writer)
 
     if has_mobile:
-        generate_mobile(root, ctx, write)
+        generate_mobile(root, ctx, writer, is_nextjs=is_nextjs)
 
-    write(root, ".gitignore", gitignore())
-    write(root, "docker-compose.yml", docker_compose(ctx, is_nextjs))
-    write(root, "scripts/init-db.sql", init_db_sql(ctx["schema"]))
-    write(root, "README.md", readme(ctx, is_nextjs, has_mobile))
+    # ── CI/CD ─────────────────────────────────────────────────────
+    if is_nextjs:
+        writer(root, ".github/workflows/ci.yml", github_ci_nextjs())
+        writer(root, ".github/workflows/deploy.yml", github_deploy_nextjs())
+    else:
+        writer(root, ".github/workflows/ci.yml", github_ci_go())
+        writer(root, ".github/workflows/deploy.yml", github_deploy_go())
+        writer(root, "package.json", concurrent_dev_package_json(name))
+
+    writer(root, ".gitignore", gitignore())
+    writer(root, "docker-compose.yml", docker_compose(ctx, is_nextjs))
+    writer(root, "scripts/init-db.sql", init_db_sql(ctx["schema"]))
+    writer(root, "supabase/migrations/001_init.sql", init_db_sql(ctx["schema"]))
+    writer(root, "README.md", readme(ctx, is_nextjs, has_mobile))
+
+    if dry_run:
+        print(f"\n📋 Dry run complete. {file_count[0]} files would be created.")
+        return
 
     # ── Git init ──────────────────────────────────────────────────
     print("\n🔧 Initializing git repository...")
@@ -120,7 +156,7 @@ def run_generate() -> None:
   2.  docker compose up -d
       → Postgres on :5432, Redis on :6379, Mailpit on :8025
 
-  3.  cp .env.example {env_file}   # fill in values
+  3.  {"cp .env.example " + env_file + "   # fill in values" if is_nextjs else "cp api/.env.example api/.dev.vars" + chr(10) + "      cp web/.env.example web/.env"}
 
   4.  {dev_cmd}
 {mobile_step}

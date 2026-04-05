@@ -26,9 +26,18 @@ def generate_nextjs(root, ctx: dict, write) -> None:
     write(root, "src/lib/resend.ts",    _lib_resend(title))
     write(root, "src/lib/r2.ts",        _lib_r2())
     write(root, "src/lib/posthog.ts",   _lib_posthog())
+    write(root, "src/app/(auth)/sign-in/[[...sign-in]]/page.tsx", _sign_in_page())
+    write(root, "src/app/(auth)/sign-up/[[...sign-up]]/page.tsx", _sign_up_page())
+    write(root, "src/app/(auth)/layout.tsx", _auth_layout())
+    write(root, "instrumentation.ts",  _instrumentation())
+    write(root, "src/app/dashboard/page.tsx", _dashboard_page())
+    write(root, "postcss.config.mjs",  _postcss_config())
+    write(root, "src/app/api/health/route.ts", _health_route())
+    write(root, "eslint.config.mjs",  _eslint_config())
+    write(root, "src/emails/welcome.tsx", _welcome_email())
 
 
-# ──────────────────────────────────────────────────────────────────
+# ───────────────────────────────���──────────────────────────────────
 
 def _package_json(name: str) -> str:
     return json.dumps({
@@ -54,6 +63,7 @@ def _package_json(name: str) -> str:
             "posthog-js": "^1",
             "posthog-node": "^4",
             "@sentry/nextjs": "^8",
+            "@react-email/components": "^0",
         },
         "devDependencies": {
             "typescript": "^5",
@@ -64,6 +74,7 @@ def _package_json(name: str) -> str:
             "@tailwindcss/postcss": "^4",
             "eslint": "^9",
             "eslint-config-next": "^15",
+            "@eslint/eslintrc": "^3",
         },
     }, indent=2)
 
@@ -263,6 +274,20 @@ def _providers() -> str:
 import posthog from "posthog-js";
 import { PostHogProvider as PHProvider } from "posthog-js/react";
 import { useEffect } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+
+function PostHogPageview() {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    if (pathname && posthog) {
+      let url = window.origin + pathname;
+      if (searchParams.toString()) url += "?" + searchParams.toString();
+      posthog.capture("$pageview", { "$current_url": url });
+    }
+  }, [pathname, searchParams]);
+  return null;
+}
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -272,7 +297,12 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
       capture_pageview: false,
     });
   }, []);
-  return <PHProvider client={posthog}>{children}</PHProvider>;
+  return (
+    <PHProvider client={posthog}>
+      <PostHogPageview />
+      {children}
+    </PHProvider>
+  );
 }
 '''
 
@@ -389,5 +419,157 @@ export async function captureEvent(
 ) {
   posthogServer.capture({ distinctId, event, properties });
   await posthogServer.shutdown();
+}
+'''
+
+
+def _sign_in_page() -> str:
+    return '''\
+import { SignIn } from "@clerk/nextjs";
+
+export default function SignInPage() {
+  return <SignIn />;
+}
+'''
+
+
+def _sign_up_page() -> str:
+    return '''\
+import { SignUp } from "@clerk/nextjs";
+
+export default function SignUpPage() {
+  return <SignUp />;
+}
+'''
+
+
+def _auth_layout() -> str:
+    return '''\
+export default function AuthLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center">
+      {children}
+    </div>
+  );
+}
+'''
+
+
+def _instrumentation() -> str:
+    return '''\
+import * as Sentry from "@sentry/nextjs";
+
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      tracesSampleRate: 1.0,
+    });
+  }
+  if (process.env.NEXT_RUNTIME === "edge") {
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      tracesSampleRate: 1.0,
+    });
+  }
+}
+
+export const onRequestError = Sentry.captureRequestError;
+'''
+
+
+def _dashboard_page() -> str:
+    return '''\
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+
+export default async function DashboardPage() {
+  const { userId } = await auth();
+  if (!userId) redirect("/sign-in");
+
+  const user = await currentUser();
+
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center p-24">
+      <h1 className="text-4xl font-bold">Dashboard</h1>
+      <p className="mt-4 text-gray-500">
+        Welcome back{user?.firstName ? `, ${user.firstName}` : ""}!
+      </p>
+    </main>
+  );
+}
+'''
+
+
+def _postcss_config() -> str:
+    return '''\
+export default {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+'''
+
+
+def _health_route() -> str:
+    return '''\
+import { NextResponse } from "next/server";
+
+export async function GET() {
+  return NextResponse.json({ status: "ok" }, { status: 200 });
+}
+'''
+
+
+def _eslint_config() -> str:
+    return '''\
+import { dirname } from "path";
+import { fileURLToPath } from "url";
+import { FlatCompat } from "@eslint/eslintrc";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const compat = new FlatCompat({ baseDirectory: __dirname });
+
+export default [...compat.extends("next/core-web-vitals", "next/typescript")];
+'''
+
+
+def _welcome_email() -> str:
+    return '''\
+import { Html, Head, Body, Container, Section, Text, Button, Hr } from "@react-email/components";
+
+interface WelcomeEmailProps {
+  name?: string;
+  actionUrl?: string;
+}
+
+export default function WelcomeEmail({ name = "there", actionUrl = "/" }: WelcomeEmailProps) {
+  return (
+    <Html>
+      <Head />
+      <Body style={{ fontFamily: "sans-serif", background: "#f6f9fc" }}>
+        <Container style={{ maxWidth: 600, margin: "0 auto", padding: "40px 20px" }}>
+          <Section style={{ background: "#fff", borderRadius: 8, padding: 32 }}>
+            <Text style={{ fontSize: 24, fontWeight: "bold" }}>Welcome, {name}!</Text>
+            <Text style={{ color: "#666", lineHeight: 1.6 }}>
+              Thanks for signing up. You can get started by clicking the button below.
+            </Text>
+            <Button
+              href={actionUrl}
+              style={{ background: "#000", color: "#fff", padding: "12px 24px", borderRadius: 6, textDecoration: "none", display: "inline-block", marginTop: 16 }}
+            >
+              Get Started
+            </Button>
+            <Hr style={{ margin: "32px 0", borderColor: "#eee" }} />
+            <Text style={{ color: "#999", fontSize: 12 }}>
+              If you didn&apos;t create this account, you can safely ignore this email.
+            </Text>
+          </Section>
+        </Container>
+      </Body>
+    </Html>
+  );
 }
 '''

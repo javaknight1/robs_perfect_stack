@@ -1,123 +1,92 @@
 # TODO
 
-Tasks are organized by priority. Items marked **[BROKEN]** are bugs in currently generated code and should be fixed first.
-
----
-
-## 🔴 Critical — Broken Generated Code
-
-These are bugs in the templates that produce non-functional code.
-
-- [ ] **[BROKEN] Go R2 upload signing is a stub**
-  `api/internal/storage/r2.go` — `signRequest()` sets the date headers but the HMAC computation is discarded (`_ = hmac.New(...)`). Uploads will fail R2 authentication. Fix: implement full AWS Signature V4, or switch to using a [CF R2 binding](https://developers.cloudflare.com/r2/api/workers/workers-api-usage/) directly from the Worker (no signing needed when accessed via binding).
-
-- [ ] **[BROKEN] Go Clerk JWT verification calls a wrong endpoint**
-  `api/internal/middleware/clerk.go` — `/v1/tokens/verify` with an `X-Token` header does not exist in Clerk's API. Fix: fetch Clerk's JWKS from `https://<your-clerk-domain>/.well-known/jwks.json`, cache it, and verify the JWT locally using a Go JWT library (`golang-jwt/jwt`). The `CLERK_JWKS_URL` env var should be added to `.env.example`.
-
-- [ ] **[BROKEN] Go user ID stored in request header instead of context**
-  `api/internal/middleware/clerk.go` — user ID is passed downstream via `r.Header.Set("X-User-ID", ...)` rather than `context.WithValue`. This is non-idiomatic and could be overridden by a client. Fix: define a typed context key and store user ID with `context.WithValue`.
-
----
-
-## 🟠 Missing Generated Files
-
-Files that should be scaffolded but aren't.
-
-- [ ] **Next.js: Auth pages not generated**
-  Clerk middleware redirects unauthenticated users to `/sign-in` and `/sign-up` but those pages are never created. Generate:
-  - `src/app/(auth)/sign-in/[[...sign-in]]/page.tsx` — Clerk `<SignIn />` component
-  - `src/app/(auth)/sign-up/[[...sign-up]]/page.tsx` — Clerk `<SignUp />` component
-  - `src/app/(auth)/layout.tsx` — centered layout wrapper
-
-- [ ] **Next.js: `instrumentation.ts` not generated**
-  `next.config.ts` enables `instrumentationHook: true` for Sentry but the required `instrumentation.ts` file is never created. Generate it with Sentry's `onRequestError` hook wired up.
-
-- [ ] **Next.js: Dashboard page not generated**
-  `.env.example` sets `AFTER_SIGN_IN_URL=/dashboard` but `src/app/dashboard/page.tsx` doesn't exist.
-
-- [ ] **Go: `.dev.vars` file not generated**
-  Cloudflare Workers uses `.dev.vars` (not `.env`) for local secrets when running `wrangler dev`. The Go template generates `api/.env.example` but doesn't produce `api/.dev.vars.example`. Wrangler will ignore a regular `.env` file.
-
-- [ ] **Go: `go.sum` not generated**
-  A `go.sum` file is required for reproducible Go builds. Currently the user must run `go mod tidy` manually (which also requires network access to download deps). Either generate a placeholder with instructions or add a `make tidy` step prominently to the post-generate output.
-
-- [ ] **Go: GitHub module path is hardcoded**
-  `go.mod` is generated with `module github.com/yourusername/<name>`. The `new` command should prompt for a GitHub username (or full module path) so this is correct from the start.
-
-- [ ] **Supabase migrations directory not generated**
-  Generate a `supabase/migrations/` directory with an initial `001_init.sql` containing the `CREATE SCHEMA` + `GRANT` SQL so it's version controlled and not just in the README.
-
-- [ ] **GitHub Actions CI/CD not generated**
-  Generate `.github/workflows/`:
-  - `ci.yml` — lint + type-check on PR (both Next.js and Go)
-  - `deploy.yml` — deploy on push to `main` (Vercel CLI for Next.js, Wrangler for Go)
-
-- [ ] **No concurrent dev script for Go + React**
-  Running the Go Worker (`wrangler dev`) and Vite (`npm run dev`) simultaneously requires two terminals. Add a root-level `package.json` with a `dev` script using `concurrently` to start both with one command.
-
----
-
-## 🟡 CLI Improvements
-
-- [ ] **`rob-stack version` command**
-  Print the installed version from `pyproject.toml`. Useful for debugging and confirming updates.
-
-- [ ] **`--dry-run` flag for `new`**
-  Print the list of files that would be generated without writing anything. Useful for previewing before committing.
-
-- [ ] **`rob-stack check` migration prompt uses wrong path for Go**
-  The generated Claude Code prompt references `src/lib/<service>.ts` as the target for new client files. For Go projects it should reference `api/internal/<service>/`.
-
-- [ ] **`rob-stack check` should detect more alternative providers**
-  Current detection of alternatives is incomplete. Add:
-  - Auth: `supabase` (as auth provider, not DB), `firebase`
-  - Storage: `@vercel/blob`, `uploadthing`
-  - Analytics: `@vercel/analytics`, Google Analytics (`gtag`)
-  - Hosting: `fly.toml` (Fly.io), `Procfile` (Heroku), `Dockerfile` without wrangler
-
-- [ ] **`rob-stack check` should verify SDK initialization, not just package presence**
-  Currently passing requires only that the package appears in `package.json` or `go.mod`. A more useful check would scan source files to confirm the client is actually instantiated (e.g., `posthog.init(` exists, `Sentry.init(` exists, `ClerkProvider` is in the layout).
-
-- [ ] **`rob-stack check --service <name>` for targeted checks**
-  Allow checking a single service in isolation: `rob-stack check . --service clerk`
+Tasks are organized by priority.
 
 ---
 
 ## 🟢 Template Quality Improvements
 
 - [ ] **TinyGo stdlib compatibility audit**
-  Not all Go standard library packages work in TinyGo. The generated Go code uses `crypto/hmac`, `crypto/sha256`, `encoding/json`, `net/http`, `fmt`, `io`, `bytes` — these need to be verified against TinyGo's [supported packages list](https://tinygo.org/docs/reference/lang-support/stdlib/). `net/http` client support in TinyGo targets wasm is limited and may require `github.com/syumai/workers`'s fetch wrapper instead.
-
-- [ ] **Go PostHog client not generated**
-  The Next.js template generates `src/lib/posthog.ts` (server-side). The Go template has no PostHog HTTP client. Generate `api/internal/analytics/posthog.go` that POSTs capture events to `https://us.i.posthog.com/capture/`.
-
-- [ ] **Go BetterStack logging not generated**
-  Neither arch generates actual BetterStack log shipping code. Generate a simple logging wrapper that ships to BetterStack's HTTP ingest endpoint. For Next.js, wire it into `instrumentation.ts`. For Go, create `api/internal/logger/betterstack.go`.
-
-- [ ] **Next.js: PostHog pageview tracking not implemented**
-  `providers.tsx` initializes PostHog with `capture_pageview: false` but no pageview tracking is added. Generate a `usePathname`-based pageview hook and call it from the layout.
-
-- [ ] **Resend: No email templates generated**
-  `sendEmail()` accepts raw HTML. Generate at least one React Email template (e.g., a welcome email) in `src/emails/welcome.tsx` so there's a real example to build from.
-
-- [ ] **Go: CORS config only supports single origin**
-  `FRONTEND_URL` allows one origin. For apps with both a web and mobile client hitting the same Worker, the CORS config needs to accept a list. Update the template to parse `ALLOWED_ORIGINS` as a comma-separated list.
+  The generated Go code uses `crypto/hmac`, `crypto/sha256`, `crypto/rsa`, `encoding/base64`, `math/big`, `sync` — these need to be verified against TinyGo's [supported packages list](https://tinygo.org/docs/reference/lang-support/stdlib/). `net/http` client support in TinyGo WASM targets is limited.
 
 ---
 
 ## ⚪ Nice to Have
 
-- [ ] **Tests for the Python package**
-  No tests exist. At minimum: unit tests for each `check_*` function in `check.py` with fixtures representing conforming and non-conforming repos, and smoke tests for `generate_nextjs` and `generate_go_cloudflare` verifying the expected file set is written.
-
 - [ ] **`rob-stack upgrade` command**
-  For an existing project generated by an older version of the tool, apply diffs to bring it up to the current template (e.g., add a missing `instrumentation.ts`, update a `wrangler.toml` field). Hard to implement correctly but high value over time.
+  For an existing project generated by an older version, apply diffs to bring it up to the current template.
 
 - [ ] **Interactive service account setup**
-  After generating a project, optionally open browser tabs to each service's new-project page (Supabase, Clerk, Upstash, etc.) in sequence.
-
-- [ ] **`rob-stack check` JSON output mode**
-  `rob-stack check . --json` for machine-readable output, useful for piping into other scripts or CI.
+  After generating, optionally open browser tabs to each service's new-project page.
 
 - [ ] **Config file support**
-  Support a `.rob-stack.toml` at repo root that stores project metadata (name, architecture, services enabled) so `check` doesn't have to infer everything from the file tree.
+  `.rob-stack.toml` at repo root to store project metadata so `check` doesn't have to infer everything.
+
+- [ ] **Input validation improvements**
+  - GitHub username prompt accepts any string — should reject special characters
+  - Project name sanitization is minimal — could validate against npm naming rules
+  - No confirmation prompt before writing files (outside of `--dry-run`)
+
+---
+
+## ✅ Done
+
+<details>
+<summary>Completed items (click to expand)</summary>
+
+### Round 1 — Core Fixes
+- [x] **[BROKEN] Go R2 upload signing is a stub** — Fixed: implemented full AWS Signature V4
+- [x] **[BROKEN] Go Clerk JWT verification calls a wrong endpoint** — Fixed: JWKS-based local verification with RSA signature validation
+- [x] **[BROKEN] Go user ID stored in request header instead of context** — Fixed: uses `context.WithValue` with typed key
+- [x] **Next.js: Auth pages not generated** — Added sign-in, sign-up, and auth layout
+- [x] **Next.js: `instrumentation.ts` not generated** — Added with Sentry `onRequestError` hook
+- [x] **Next.js: Dashboard page not generated** — Added `src/app/dashboard/page.tsx`
+- [x] **Go: `.dev.vars` file not generated** — Added `api/.dev.vars.example`
+- [x] **Go: GitHub module path is hardcoded** — Generator now prompts for GitHub username
+- [x] **Supabase migrations directory not generated** — Added `supabase/migrations/001_init.sql`
+- [x] **Next.js: `postcss.config.mjs` not generated** — Added for Tailwind CSS v4
+- [x] **`rob-stack version` command** — Added with `importlib.metadata` + pyproject.toml fallback
+- [x] **`--dry-run` flag for `new`** — Added, previews file list without writing
+- [x] **`rob-stack check` migration prompt uses wrong path for Go** — Fixed: conditional path based on architecture
+- [x] **`rob-stack check --service <name>` for targeted checks** — Added
+- [x] **Mobile: sign-in screen `useState` imported from wrong module** — Fixed: now imports from `react`
+- [x] **Tests for the Python package** — 103 unit tests covering check.py, CLI, generate, and templates
+
+### Round 2 — Critical Bugs
+- [x] **Go: `.dev.vars.example` has wrong Supabase URL** — Fixed: changed from `localhost:5432` to `https://PROJECT.supabase.co` with comment
+- [x] **Go: "next steps" tells user to `cp .env.example .env` at root level** — Fixed: now shows `cp api/.env.example api/.dev.vars` and `cp web/.env.example web/.env`
+- [x] **Next.js: Generated README health check has no matching route** — Fixed: added `src/app/api/health/route.ts`
+- [x] **Mobile: `.env.example` hardcodes port 8787 regardless of architecture** — Fixed: `generate_mobile()` now receives `is_nextjs` and uses port 3000 or 8787 accordingly
+- [x] **Gitignore typo: `.sentry-clack-store`** — Fixed: changed to `.sentryclirc`
+
+### Round 2 — Missing Generated Files
+- [x] **GitHub Actions CI/CD not generated** — Added `ci.py` template with `ci.yml` and `deploy.yml` for both architectures
+- [x] **No concurrent dev script for Go + React** — Added root `package.json` with `concurrently` dev script
+- [x] **Next.js: No ESLint config generated** — Added `eslint.config.mjs` using `@eslint/eslintrc` FlatCompat
+- [x] **Go: `go.sum` not generated** — Documented in next-steps output that `go mod tidy` creates it
+
+### Round 2 — CLI & Checker Improvements
+- [x] **`rob-stack check` detects more alternative providers** — Added: `uploadthing`, `@vercel/analytics`, `fly.toml`, `Procfile` (Heroku), `@supabase/auth-helpers-nextjs`
+- [x] **`rob-stack check` verifies SDK initialization** — PostHog and Sentry now check source for `posthog.init(` / `Sentry.init()`
+- [x] **`_load_source_files` memory optimization** — Files >1MB are now skipped
+- [x] **`rob-stack check` JSON output mode** — Added `--json` flag producing machine-readable output
+
+### Round 2 — Template Quality
+- [x] **Generated README file trees are outdated** — Updated both Next.js and Go trees with all new files
+- [x] **Go: Clerk JWKS cache never expires** — Replaced `sync.Once` with TTL-based cache (6h, `sync.RWMutex`)
+- [x] **Go PostHog client not generated** — Added `internal/analytics/posthog.go`
+- [x] **Go BetterStack logging not generated** — Added `internal/logger/betterstack.go`
+- [x] **Next.js: PostHog pageview tracking not implemented** — Added `usePathname`/`useSearchParams` based pageview capture in providers.tsx
+- [x] **Resend: No email templates generated** — Added `src/emails/welcome.tsx` using React Email
+- [x] **Go: CORS config only supports single origin** — Changed to `ALLOWED_ORIGINS` comma-separated list with `strings.Split`
+- [x] **Go: Redis `do()` sends all commands as POST to root URL** — Switched to path-based commands with `url.PathEscape`
+- [x] **Mobile: `app.json` bundle ID uses `com.yourusername`** — Now uses `github_user` from generator context
+- [x] **Mobile: PostHog and Sentry never initialized** — Added `Sentry.init()` and `PostHogProvider` in `_root_layout()`
+
+### Round 2 — Nice to Have
+- [x] **`pyproject.toml` claims `requires-python = ">=3.11"` but code runs on 3.9** — Changed to `>=3.9`
+- [x] **`generate.py` has unused `import os`** — Removed
+- [x] **`docker_compose()` has unused parameters** — Removed unused `name`/`schema` variable extraction
+- [x] **Generated project README should document `rob-stack` CLI flags** — Added `## rob-stack CLI` section
+
+</details>

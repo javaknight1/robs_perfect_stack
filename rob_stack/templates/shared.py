@@ -20,19 +20,18 @@ build/
 .env
 .env.local
 .env.*.local
+.dev.vars
 
 # misc
 .DS_Store
 *.log
 *.tsbuildinfo
-.sentry-clack-store
+.sentryclirc
 .wrangler/
 """
 
 
 def docker_compose(ctx: dict, is_nextjs: bool) -> str:
-    name = ctx["name"]
-    schema = ctx["schema"]
     return f"""\
 # docker-compose.yml — local development infrastructure
 #
@@ -141,9 +140,19 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │   ├── app/                # Next.js App Router pages & layouts
 │   │   ├── layout.tsx      # Root layout (Clerk + PostHog providers)
 │   │   ├── page.tsx        # Home page
-│   │   └── globals.css     # Tailwind CSS entry
+│   │   ├── globals.css     # Tailwind CSS entry
+│   │   ├── dashboard/
+│   │   │   └── page.tsx    # Protected dashboard page
+│   │   ├── (auth)/
+│   │   │   ├── layout.tsx  # Centered auth layout
+│   │   │   ├── sign-in/[[...sign-in]]/page.tsx
+│   │   │   └── sign-up/[[...sign-up]]/page.tsx
+│   │   └── api/
+│   │       └── health/route.ts  # Health endpoint
 │   ├── components/
 │   │   └── providers.tsx   # Client-side provider wrappers
+│   ├── emails/
+│   │   └── welcome.tsx     # React Email template
 │   └── lib/
 │       ├── supabase.ts     # Supabase client (admin + RLS)
 │       ├── redis.ts        # Upstash Redis helpers
@@ -151,13 +160,19 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │       ├── r2.ts           # Cloudflare R2 storage (S3 SDK)
 │       └── posthog.ts      # Server-side analytics
 ├── middleware.ts            # Clerk auth middleware
+├── instrumentation.ts       # Sentry instrumentation hook
 {mobile_tree}├── docker-compose.yml       # Local Postgres, Redis, Mailpit
 ├── scripts/
 │   └── init-db.sql          # DB schema bootstrap (runs on first docker compose up)
+├── supabase/
+│   └── migrations/
+│       └── 001_init.sql     # Initial schema migration
 ├── .env.example             # All required environment variables
 ├── package.json
 ├── next.config.ts
 ├── tailwind.config.ts
+├── postcss.config.mjs
+├── eslint.config.mjs
 ├── tsconfig.json
 ├── vercel.json
 └── README.md
@@ -173,8 +188,11 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 │   │   ├── cache/redis.go       # Upstash Redis HTTP client
 │   │   ├── middleware/clerk.go  # Clerk JWT verification
 │   │   ├── email/resend.go      # Resend email client
-│   │   └── storage/r2.go        # Cloudflare R2 storage
+│   │   ├── storage/r2.go        # Cloudflare R2 storage
+│   │   ├── analytics/posthog.go # PostHog event capture
+│   │   └── logger/betterstack.go # BetterStack log shipping
 │   ├── .env.example
+│   ├── .dev.vars.example        # Local secrets for wrangler dev
 │   ├── go.mod
 │   └── wrangler.toml
 ├── web/                         # React frontend (Cloudflare Pages)
@@ -190,6 +208,9 @@ def readme(ctx: dict, is_nextjs: bool, has_mobile: bool) -> str:
 {mobile_tree}├── docker-compose.yml           # Local Postgres, Redis, Mailpit
 ├── scripts/
 │   └── init-db.sql              # DB schema bootstrap
+├── supabase/
+│   └── migrations/
+│       └── 001_init.sql         # Initial schema migration
 ├── Makefile                     # Dev/build/deploy targets
 └── README.md
 ```"""
@@ -443,4 +464,13 @@ Set up each service and copy the credentials into your `{env_file}`:
 ## Deploy
 
 {deploy}
+
+## rob-stack CLI
+
+This project was generated with [rob-stack](https://github.com/yourusername/rob-stack).
+
+Useful commands:
+- `rob-stack check .` — audit this repo for conformance to the canonical stack
+- `rob-stack check . --service clerk` — check a single service
+- `rob-stack new --dry-run` — preview files without writing
 """

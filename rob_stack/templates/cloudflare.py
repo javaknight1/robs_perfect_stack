@@ -7,7 +7,8 @@ def generate_go_cloudflare(root, ctx: dict, write) -> None:
     name   = ctx["name"]
     title  = ctx["title"]
     schema = ctx["schema"]
-    module = f"github.com/yourusername/{name}"
+    github_user = ctx.get("github_user", "yourusername")
+    module = f"github.com/{github_user}/{name}"
 
     print("\n📦 Generating Go + React (Cloudflare Workers + Pages)...")
 
@@ -31,7 +32,10 @@ def generate_go_cloudflare(root, ctx: dict, write) -> None:
     write(root, "api/internal/middleware/clerk.go",  _go_clerk(module))
     write(root, "api/internal/email/resend.go",      _go_email(module))
     write(root, "api/internal/storage/r2.go",        _go_r2(module))
+    write(root, "api/internal/analytics/posthog.go", _go_posthog(module))
+    write(root, "api/internal/logger/betterstack.go", _go_betterstack(module))
     write(root, "api/.env.example",                  _api_env_example(name, schema))
+    write(root, "api/.dev.vars.example",             _dev_vars_example(name, schema))
     write(root, "api/wrangler.toml",                 _worker_wrangler(name))
     write(root, "Makefile",                          _makefile())
 
@@ -299,6 +303,7 @@ package main
 
 import (
 \t"net/http"
+\t"strings"
 
 \t"github.com/go-chi/chi/v5"
 \t"github.com/go-chi/chi/v5/middleware"
@@ -313,7 +318,7 @@ func newRouter() http.Handler {{
 
 \tr.Use(middleware.Recoverer)
 \tr.Use(cors.Handler(cors.Options{{
-\t\tAllowedOrigins:   []string{{workers.Getenv("FRONTEND_URL")}},
+\t\tAllowedOrigins: strings.Split(workers.Getenv("ALLOWED_ORIGINS"), ","),
 \t\tAllowedMethods:   []string{{"GET", "POST", "PUT", "DELETE", "OPTIONS"}},
 \t\tAllowedHeaders:   []string{{"Accept", "Authorization", "Content-Type"}},
 \t\tAllowCredentials: true,
@@ -431,6 +436,7 @@ import (
 \t"fmt"
 \t"io"
 \t"net/http"
+\t"net/url"
 \t"strings"
 \t"time"
 
@@ -446,14 +452,18 @@ func New() *Client {
 \treturn &Client{
 \t\turl:   workers.Getenv("UPSTASH_REDIS_REST_URL"),
 \t\ttoken: workers.Getenv("UPSTASH_REDIS_REST_TOKEN"),
-}
+\t}
 }
 
 func (c *Client) do(args ...string) ([]byte, error) {
-\tbody := mustJSON(args)
-\treq, _ := http.NewRequest("POST", c.url, strings.NewReader(body))
+\t// Build path-based URL: e.g. SET/key/value/EX/3600
+\tparts := make([]string, len(args))
+\tfor i, a := range args {
+\t\tparts[i] = url.PathEscape(a)
+\t}
+\treqURL := c.url + "/" + strings.Join(parts, "/")
+\treq, _ := http.NewRequest("GET", reqURL, nil)
 \treq.Header.Set("Authorization", "Bearer "+c.token)
-\treq.Header.Set("Content-Type", "application/json")
 \tres, err := http.DefaultClient.Do(req)
 \tif err != nil {
 \t\treturn nil, err
@@ -485,10 +495,6 @@ func (c *Client) Del(key string) error {
 \treturn err
 }
 
-func mustJSON(v any) string {
-\tb, _ := json.Marshal(v)
-\treturn string(b)
-}
 """
 
 
@@ -496,15 +502,24 @@ def _go_clerk(module: str) -> str:
     return """\
 // internal/middleware/clerk.go
 //
-// Validates Clerk JWTs by calling the Clerk API — no SDK needed in Workers.
+// Validates Clerk JWTs by fetching JWKS and verifying locally.
+// No external JWT library needed — uses stdlib crypto/rsa.
 package middleware
 
 import (
+\t"context"
+\t"crypto"
+\t"crypto/rsa"
+\t"crypto/sha256"
+\t"encoding/base64"
 \t"encoding/json"
 \t"fmt"
 \t"io"
+\t"math/big"
 \t"net/http"
 \t"strings"
+\t"sync"
+\t"time"
 
 \t"github.com/syumai/workers"
 )
@@ -513,7 +528,16 @@ type contextKey string
 
 const UserIDKey contextKey = "clerkUserID"
 
-// RequireAuth validates the Bearer token against Clerk's /oauth/userinfo endpoint.
+// jwksCache caches the JWKS keys fetched from Clerk with a TTL.
+var jwksCache struct {
+\tkeys      map[string]*rsa.PublicKey
+\tmu        sync.RWMutex
+\tlastFetch time.Time
+}
+
+const jwksTTL = 6 * time.Hour
+
+// RequireAuth validates the Bearer JWT against Clerk's JWKS.
 func RequireAuth(next http.Handler) http.Handler {
 \treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 \t\ttoken := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -522,50 +546,160 @@ func RequireAuth(next http.Handler) http.Handler {
 \t\t\treturn
 \t\t}
 
-\t\tuserID, err := verifyClerkToken(token)
+\t\tuserID, err := verifyClerkJWT(token)
 \t\tif err != nil {
 \t\t\thttp.Error(w, "unauthorized", http.StatusUnauthorized)
 \t\t\treturn
 \t\t}
 
-\t\t// Store user ID in request context
-\t\tctx := r.Context()
-\t\t// Use a simple header pass-through for now; swap for context.WithValue with a real ctx key
-\t\tr.Header.Set("X-User-ID", userID)
-\t\t_ = ctx
-\t\tnext.ServeHTTP(w, r)
+\t\tctx := context.WithValue(r.Context(), UserIDKey, userID)
+\t\tnext.ServeHTTP(w, r.WithContext(ctx))
 \t})
 }
 
-func verifyClerkToken(token string) (string, error) {
-\tsecretKey := workers.Getenv("CLERK_SECRET_KEY")
-\treq, _ := http.NewRequest("GET", "https://api.clerk.com/v1/tokens/verify", nil)
-\treq.Header.Set("Authorization", "Bearer "+secretKey)
-\treq.Header.Set("X-Token", token)
+// verifyClerkJWT decodes the JWT, fetches Clerk's JWKS, and verifies the signature.
+func verifyClerkJWT(token string) (string, error) {
+\tparts := strings.Split(token, ".")
+\tif len(parts) != 3 {
+\t\treturn "", fmt.Errorf("invalid JWT format")
+\t}
 
-\tres, err := http.DefaultClient.Do(req)
+\t// Decode header to get key ID
+\theaderBytes, err := base64URLDecode(parts[0])
 \tif err != nil {
-\t\treturn "", err
+\t\treturn "", fmt.Errorf("decode header: %w", err)
+\t}
+\tvar header struct {
+\t\tKid string `json:"kid"`
+\t\tAlg string `json:"alg"`
+\t}
+\tif err := json.Unmarshal(headerBytes, &header); err != nil {
+\t\treturn "", fmt.Errorf("parse header: %w", err)
+\t}
+
+\t// Decode payload
+\tpayloadBytes, err := base64URLDecode(parts[1])
+\tif err != nil {
+\t\treturn "", fmt.Errorf("decode payload: %w", err)
+\t}
+\tvar claims struct {
+\t\tSub string `json:"sub"`
+\t\tExp int64  `json:"exp"`
+\t\tNbf int64  `json:"nbf"`
+\t}
+\tif err := json.Unmarshal(payloadBytes, &claims); err != nil {
+\t\treturn "", fmt.Errorf("parse claims: %w", err)
+\t}
+
+\t// Check expiry
+\tnow := time.Now().Unix()
+\tif claims.Exp > 0 && now > claims.Exp {
+\t\treturn "", fmt.Errorf("token expired")
+\t}
+\tif claims.Nbf > 0 && now < claims.Nbf {
+\t\treturn "", fmt.Errorf("token not yet valid")
+\t}
+\tif claims.Sub == "" {
+\t\treturn "", fmt.Errorf("missing sub claim")
+\t}
+
+\t// Fetch and cache JWKS
+\tkeys, err := getJWKS()
+\tif err != nil {
+\t\treturn "", fmt.Errorf("fetch JWKS: %w", err)
+\t}
+
+\tpubKey, ok := keys[header.Kid]
+\tif !ok {
+\t\treturn "", fmt.Errorf("unknown key ID: %s", header.Kid)
+\t}
+
+\t// Verify RSA signature
+\tsigned := []byte(parts[0] + "." + parts[1])
+\tsigBytes, err := base64URLDecode(parts[2])
+\tif err != nil {
+\t\treturn "", fmt.Errorf("decode signature: %w", err)
+\t}
+
+\thash := sha256.Sum256(signed)
+\tif err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hash[:], sigBytes); err != nil {
+\t\treturn "", fmt.Errorf("invalid signature: %w", err)
+\t}
+
+\treturn claims.Sub, nil
+}
+
+func getJWKS() (map[string]*rsa.PublicKey, error) {
+\tjwksCache.mu.RLock()
+\tif jwksCache.keys != nil && time.Since(jwksCache.lastFetch) < jwksTTL {
+\t\tdefer jwksCache.mu.RUnlock()
+\t\treturn jwksCache.keys, nil
+\t}
+\tjwksCache.mu.RUnlock()
+
+\tjwksCache.mu.Lock()
+\tdefer jwksCache.mu.Unlock()
+
+\t// Double-check after acquiring write lock
+\tif jwksCache.keys != nil && time.Since(jwksCache.lastFetch) < jwksTTL {
+\t\treturn jwksCache.keys, nil
+\t}
+
+\tjwksURL := workers.Getenv("CLERK_JWKS_URL")
+\tres, err := http.Get(jwksURL)
+\tif err != nil {
+\t\treturn nil, err
 \t}
 \tdefer res.Body.Close()
 \tbody, _ := io.ReadAll(res.Body)
 
-\tif res.StatusCode != 200 {
-\t\treturn "", fmt.Errorf("clerk verify failed: %s", body)
+\tvar jwks struct {
+\t\tKeys []struct {
+\t\t\tKid string `json:"kid"`
+\t\t\tN   string `json:"n"`
+\t\t\tE   string `json:"e"`
+\t\t} `json:"keys"`
+\t}
+\tif err := json.Unmarshal(body, &jwks); err != nil {
+\t\treturn nil, err
 \t}
 
-\tvar payload struct {
-\t\tSub string `json:"sub"`
+\tkeys := make(map[string]*rsa.PublicKey, len(jwks.Keys))
+\tfor _, k := range jwks.Keys {
+\t\tnBytes, _ := base64URLDecode(k.N)
+\t\teBytes, _ := base64URLDecode(k.E)
+\t\te := 0
+\t\tfor _, b := range eBytes {
+\t\t\te = e<<8 + int(b)
+\t\t}
+\t\tkeys[k.Kid] = &rsa.PublicKey{
+\t\t\tN: new(big.Int).SetBytes(nBytes),
+\t\t\tE: e,
+\t\t}
 \t}
-\tif err := json.Unmarshal(body, &payload); err != nil || payload.Sub == "" {
-\t\treturn "", fmt.Errorf("invalid clerk token payload")
+
+\tjwksCache.keys = keys
+\tjwksCache.lastFetch = time.Now()
+\treturn jwksCache.keys, nil
+}
+
+func base64URLDecode(s string) ([]byte, error) {
+\t// Add padding if needed
+\tswitch len(s) % 4 {
+\tcase 2:
+\t\ts += "=="
+\tcase 3:
+\t\ts += "="
 \t}
-\treturn payload.Sub, nil
+\treturn base64.URLEncoding.DecodeString(s)
 }
 
 // UserID extracts the Clerk user ID set by RequireAuth.
 func UserID(r *http.Request) string {
-\treturn r.Header.Get("X-User-ID")
+\tif v, ok := r.Context().Value(UserIDKey).(string); ok {
+\t\treturn v
+\t}
+\treturn ""
 }
 """
 
@@ -628,7 +762,7 @@ def _go_r2(module: str) -> str:
     return """\
 // internal/storage/r2.go
 //
-// Cloudflare R2 via S3-compatible API — standard HTTP, works in Workers.
+// Cloudflare R2 via S3-compatible API with AWS Signature V4.
 package storage
 
 import (
@@ -637,9 +771,16 @@ import (
 \t"crypto/sha256"
 \t"fmt"
 \t"net/http"
+\t"sort"
+\t"strings"
 \t"time"
 
 \t"github.com/syumai/workers"
+)
+
+const (
+\tregion  = "auto"
+\tservice = "s3"
 )
 
 type Client struct {
@@ -681,19 +822,193 @@ func (c *Client) Upload(key string, data []byte, contentType string) (string, er
 }
 
 // signRequest applies AWS Signature V4 to the request.
-// For a full SigV4 implementation, use a dedicated package in production.
 func (c *Client) signRequest(req *http.Request, body []byte) {
 \tnow := time.Now().UTC()
 \tdate := now.Format("20060102")
 \tdatetime := now.Format("20060102T150405Z")
 
 \tpayloadHash := fmt.Sprintf("%x", sha256.Sum256(body))
-
 \treq.Header.Set("x-amz-date", datetime)
 \treq.Header.Set("x-amz-content-sha256", payloadHash)
+\treq.Header.Set("Host", req.URL.Host)
 
-\t// Simplified — use aws-sdk or a full SigV4 lib for production
-\t_ = hmac.New(sha256.New, []byte(c.secretKey+date))
+\t// Canonical request
+\tsignedHeaders, canonicalHeaders := buildCanonicalHeaders(req)
+\tcanonicalURI := req.URL.Path
+\tif canonicalURI == "" {
+\t\tcanonicalURI = "/"
+\t}
+\tcanonicalQuery := req.URL.Query().Encode()
+
+\tcanonicalRequest := strings.Join([]string{
+\t\treq.Method,
+\t\tcanonicalURI,
+\t\tcanonicalQuery,
+\t\tcanonicalHeaders,
+\t\tsignedHeaders,
+\t\tpayloadHash,
+\t}, "\\n")
+
+\t// String to sign
+\tcredentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
+\tcanonicalHash := fmt.Sprintf("%x", sha256.Sum256([]byte(canonicalRequest)))
+\tstringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\\n%s\\n%s\\n%s",
+\t\tdatetime, credentialScope, canonicalHash)
+
+\t// Signing key
+\tkDate := hmacSHA256([]byte("AWS4"+c.secretKey), []byte(date))
+\tkRegion := hmacSHA256(kDate, []byte(region))
+\tkService := hmacSHA256(kRegion, []byte(service))
+\tkSigning := hmacSHA256(kService, []byte("aws4_request"))
+
+\tsignature := fmt.Sprintf("%x", hmacSHA256(kSigning, []byte(stringToSign)))
+
+\treq.Header.Set("Authorization", fmt.Sprintf(
+\t\t"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+\t\tc.accessKey, credentialScope, signedHeaders, signature))
+}
+
+func buildCanonicalHeaders(req *http.Request) (string, string) {
+\theaders := make(map[string]string)
+\tfor key := range req.Header {
+\t\tlk := strings.ToLower(key)
+\t\tif lk == "host" || lk == "content-type" || strings.HasPrefix(lk, "x-amz-") {
+\t\t\theaders[lk] = strings.TrimSpace(req.Header.Get(key))
+\t\t}
+\t}
+\tkeys := make([]string, 0, len(headers))
+\tfor k := range headers {
+\t\tkeys = append(keys, k)
+\t}
+\tsort.Strings(keys)
+
+\tvar canonical, signed []string
+\tfor _, k := range keys {
+\t\tcanonical = append(canonical, k+":"+headers[k])
+\t\tsigned = append(signed, k)
+\t}
+\treturn strings.Join(signed, ";"), strings.Join(canonical, "\\n") + "\\n"
+}
+
+func hmacSHA256(key, data []byte) []byte {
+\th := hmac.New(sha256.New, key)
+\th.Write(data)
+\treturn h.Sum(nil)
+}
+"""
+
+
+def _go_posthog(module: str) -> str:
+    return """\
+// internal/analytics/posthog.go
+package analytics
+
+import (
+\t"bytes"
+\t"encoding/json"
+\t"net/http"
+
+\t"github.com/syumai/workers"
+)
+
+type Client struct {
+\tapiKey string
+\thost   string
+}
+
+func New() *Client {
+\thost := workers.Getenv("POSTHOG_HOST")
+\tif host == "" {
+\t\thost = "https://us.i.posthog.com"
+\t}
+\treturn &Client{
+\t\tapiKey: workers.Getenv("POSTHOG_KEY"),
+\t\thost:   host,
+\t}
+}
+
+// Capture sends an event to PostHog.
+func (c *Client) Capture(distinctID, event string, properties map[string]any) error {
+\tpayload, _ := json.Marshal(map[string]any{
+\t\t"api_key":     c.apiKey,
+\t\t"distinct_id": distinctID,
+\t\t"event":       event,
+\t\t"properties":  properties,
+\t})
+\treq, _ := http.NewRequest("POST", c.host+"/capture/", bytes.NewReader(payload))
+\treq.Header.Set("Content-Type", "application/json")
+\tres, err := http.DefaultClient.Do(req)
+\tif err != nil {
+\t\treturn err
+\t}
+\tdefer res.Body.Close()
+\treturn nil
+}
+"""
+
+
+def _go_betterstack(module: str) -> str:
+    return """\
+// internal/logger/betterstack.go
+package logger
+
+import (
+\t"bytes"
+\t"encoding/json"
+\t"net/http"
+
+\t"github.com/syumai/workers"
+)
+
+type Client struct {
+\tsourceToken string
+\thttpClient  *http.Client
+}
+
+func New() *Client {
+\treturn &Client{
+\t\tsourceToken: workers.Getenv("BETTERSTACK_SOURCE_TOKEN"),
+\t\thttpClient:  &http.Client{},
+\t}
+}
+
+// Log sends a structured log entry to BetterStack.
+func (c *Client) Log(level, message string, fields map[string]any) error {
+\tpayload := map[string]any{
+\t\t"level":   level,
+\t\t"message": message,
+\t}
+\tfor k, v := range fields {
+\t\tpayload[k] = v
+\t}
+\tbody, _ := json.Marshal(payload)
+\treq, _ := http.NewRequest("POST", "https://in.logs.betterstack.com", bytes.NewReader(body))
+\treq.Header.Set("Content-Type", "application/json")
+\treq.Header.Set("Authorization", "Bearer "+c.sourceToken)
+\tres, err := c.httpClient.Do(req)
+\tif err != nil {
+\t\treturn err
+\t}
+\tdefer res.Body.Close()
+\treturn nil
+}
+
+// Info logs at info level.
+func (c *Client) Info(msg string, fields ...map[string]any) {
+\tf := map[string]any{}
+\tif len(fields) > 0 {
+\t\tf = fields[0]
+\t}
+\tc.Log("info", msg, f)
+}
+
+// Error logs at error level.
+func (c *Client) Error(msg string, fields ...map[string]any) {
+\tf := map[string]any{}
+\tif len(fields) > 0 {
+\t\tf = fields[0]
+\t}
+\tc.Log("error", msg, f)
 }
 """
 
@@ -701,7 +1016,7 @@ func (c *Client) signRequest(req *http.Request, body []byte) {
 def _api_env_example(name: str, schema: str) -> str:
     return f"""\
 # ── Cloudflare Worker env vars (set via wrangler secret or dashboard) ──
-FRONTEND_URL=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173
 
 # ── Supabase (REST API — no direct TCP in Workers) ────────────────
 SUPABASE_URL=https://PROJECT.supabase.co
@@ -714,6 +1029,7 @@ UPSTASH_REDIS_REST_TOKEN=
 
 # ── Clerk ─────────────────────────────────────────────────────────
 CLERK_SECRET_KEY=sk_test_
+CLERK_JWKS_URL=https://YOUR_CLERK_DOMAIN.clerk.accounts.dev/.well-known/jwks.json
 
 # ── Resend ────────────────────────────────────────────────────────
 RESEND_API_KEY=re_
@@ -727,6 +1043,28 @@ R2_BUCKET_NAME={name}
 R2_PUBLIC_URL=https://pub-XXXX.r2.dev
 
 # ── BetterStack ───────────────────────────────────────────────────
+BETTERSTACK_SOURCE_TOKEN=
+"""
+
+
+def _dev_vars_example(name: str, schema: str) -> str:
+    return f"""\
+# .dev.vars — local secrets for wrangler dev (NOT committed to git)
+# Copy to api/.dev.vars and fill in values
+ALLOWED_ORIGINS=http://localhost:5173
+SUPABASE_URL=https://PROJECT.supabase.co  # Replace with your Supabase project URL (REST API, not direct Postgres)
+SUPABASE_SERVICE_ROLE_KEY=
+CLERK_SECRET_KEY=sk_test_
+CLERK_JWKS_URL=https://YOUR_CLERK_DOMAIN.clerk.accounts.dev/.well-known/jwks.json
+RESEND_API_KEY=re_
+RESEND_FROM_EMAIL=noreply@yourdomain.com
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME={name}
+R2_PUBLIC_URL=https://pub-XXXX.r2.dev
+UPSTASH_REDIS_REST_URL=http://localhost:6379
+UPSTASH_REDIS_REST_TOKEN=
 BETTERSTACK_SOURCE_TOKEN=
 """
 
@@ -747,7 +1085,7 @@ command = "tinygo build -o build/worker.wasm -target wasm ./cmd/worker"
 # Set secrets via: wrangler secret put SECRET_NAME
 # [vars] block is for non-sensitive values only
 [vars]
-FRONTEND_URL = "https://{name}-web.pages.dev"
+ALLOWED_ORIGINS = "https://{name}-web.pages.dev"
 
 [[routes]]
 # Update with your actual domain after deploying

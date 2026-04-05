@@ -6,11 +6,17 @@ build-backend = "setuptools.build_meta"
 name = "rob-stack"
 version = "0.1.0"
 description = "Rob's canonical stack generator and conformance checker"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
 rob-stack = "rob_stack.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]
